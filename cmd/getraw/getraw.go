@@ -1,3 +1,22 @@
+// Package main implements a Bitcoin SV transaction fetcher using the WhatsOnChain API.
+//
+// This tool retrieves raw transaction data (hex) from the WhatsOnChain blockchain explorer.
+// It supports both mainnet and testnet, and accepts transaction IDs via command-line argument,
+// flag, or stdin for flexible integration with other tools.
+//
+// Features:
+//   - Mainnet/testnet support via --testnet flag
+//   - Flexible input: argument, flag, or stdin
+//   - Direct integration with WhatsOnChain API
+//   - Easy chaining with other tools (e.g., prettytx)
+//
+// Usage:
+//
+//	getraw <txid>                    # Fetch by argument
+//	getraw -i <txid>                 # Fetch by flag
+//	echo <txid> | getraw             # Fetch from stdin
+//	getraw <txid> -t                 # Fetch from testnet
+//	getraw <txid> | prettytx         # Chain with prettytx
 package main
 
 import (
@@ -13,11 +32,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Command-line flags
 var (
-	testnet bool
-	txid    string
+	testnet bool   // Use testnet instead of mainnet
+	txid    string // Transaction ID provided via flag
 )
 
+// rootCmd is the main cobra command for the getraw tool.
 var rootCmd = &cobra.Command{
 	Use:   "getraw [txid]",
 	Short: "Get raw transaction data",
@@ -56,6 +77,9 @@ var rootCmd = &cobra.Command{
 	},
 }
 
+// readTxidFromStdin reads a transaction ID from stdin.
+// It strips all whitespace and control characters, returning only printable ASCII characters.
+// This allows for flexible input formatting (newlines, spaces, etc.).
 func readTxidFromStdin() string {
 	scanner := bufio.NewScanner(os.Stdin)
 	var txidBuilder strings.Builder
@@ -80,6 +104,12 @@ func readTxidFromStdin() string {
 	return txidBuilder.String()
 }
 
+// getRawFromWhatsOnChain fetches raw transaction data from the WhatsOnChain API.
+// It creates a client for the appropriate network (mainnet/testnet) based on the
+// --testnet flag, queries the API for the transaction, and prints the raw hex to stdout.
+//
+// Logs the chain and network information to stderr.
+// Outputs the raw transaction hex to stdout for easy piping to other tools.
 func getRawFromWhatsOnChain(txid string) {
 	ctx := context.Background()
 
@@ -109,11 +139,15 @@ func getRawFromWhatsOnChain(txid string) {
 	fmt.Println(rawTx)
 }
 
+// init initializes the cobra command flags.
+// This function is automatically called by Go before main() executes.
 func init() {
 	rootCmd.Flags().BoolVarP(&testnet, "testnet", "t", false, "Use testnet instead of mainnet")
 	rootCmd.Flags().StringVarP(&txid, "txid", "i", "", "Transaction ID to retrieve")
 }
 
+// main is the entry point for the getraw command.
+// It executes the cobra root command which handles flag parsing and command execution.
 func main() {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -121,6 +155,8 @@ func main() {
 	}
 }
 
+// isHex validates that a string contains only hexadecimal characters (0-9, a-f, A-F).
+// Returns true if the string is valid hex, false otherwise.
 func isHex(hex string) bool {
 	match, _ := regexp.MatchString("^[0-9a-fA-F]+$", hex)
 	return match

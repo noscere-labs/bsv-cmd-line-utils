@@ -1,3 +1,20 @@
+// Package main implements a Bitcoin SV transaction broadcaster using ARC (BSV Transaction Processing).
+//
+// This tool broadcasts raw Bitcoin transactions to the BSV network via ARC endpoints
+// and optionally monitors their status until they reach a final state (MINED, REJECTED, etc.).
+//
+// Features:
+//   - Config-based mainnet/testnet endpoint management via config.yaml
+//   - Real-time transaction status monitoring with customizable polling
+//   - Support for stdin or command-line input
+//   - Automatic transaction lifecycle tracking
+//
+// Usage:
+//
+//	echo "010000..." | broadcast              # Broadcast from stdin
+//	broadcast -r "010000..."                  # Broadcast using flag
+//	broadcast -t -m                           # Testnet with monitoring
+//	broadcast -m -p 10                        # Monitor with 10s poll rate
 package main
 
 import (
@@ -15,38 +32,44 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// ARCConfig holds the configuration for an ARC endpoint (mainnet or testnet).
 type ARCConfig struct {
-	URL     string `yaml:"url"`
-	APIKey  string `yaml:"api_key"`
-	Timeout string `yaml:"timeout"`
+	URL     string `yaml:"url"`      // ARC endpoint URL (e.g., "https://api.taal.com")
+	APIKey  string `yaml:"api_key"`  // API key for authentication
+	Timeout string `yaml:"timeout"`  // HTTP timeout duration (e.g., "30s")
 }
 
+// PollingConfig defines parameters for transaction status polling when monitoring is enabled.
 type PollingConfig struct {
-	Interval      string  `yaml:"interval"`
-	MaxRetries    int     `yaml:"max_retries"`
-	BackoffFactor float64 `yaml:"backoff_factor"`
+	Interval      string  `yaml:"interval"`       // Time between status checks (e.g., "3s")
+	MaxRetries    int     `yaml:"max_retries"`    // Maximum number of retry attempts
+	BackoffFactor float64 `yaml:"backoff_factor"` // Multiplier for exponential backoff
 }
 
+// TargetsConfig specifies target states for transaction monitoring.
 type TargetsConfig struct {
-	Default        string `yaml:"default"`
-	WaitForMining  bool   `yaml:"wait_for_mining"`
+	Default       string `yaml:"default"`          // Default target status to wait for
+	WaitForMining bool   `yaml:"wait_for_mining"`  // Whether to wait for MINED status
 }
 
+// Config is the root configuration structure loaded from config.yaml.
 type Config struct {
-	ARCMainnet ARCConfig     `yaml:"arc-mainnet"`
-	ARCTestnet ARCConfig     `yaml:"arc-testnet"`
-	Polling    PollingConfig `yaml:"polling"`
-	Targets    TargetsConfig `yaml:"targets"`
+	ARCMainnet ARCConfig     `yaml:"arc-mainnet"` // Mainnet ARC configuration
+	ARCTestnet ARCConfig     `yaml:"arc-testnet"` // Testnet ARC configuration
+	Polling    PollingConfig `yaml:"polling"`     // Polling parameters for monitoring
+	Targets    TargetsConfig `yaml:"targets"`     // Target status configuration
 }
 
+// Command-line flags and global configuration
 var (
-	testnet  bool
-	raw      string
-	monitor  bool
-	pollRate int
-	config   Config
+	testnet  bool   // Use testnet instead of mainnet
+	raw      string // Raw transaction hex provided via flag
+	monitor  bool   // Enable transaction status monitoring
+	pollRate int    // Polling interval in seconds for monitoring
+	config   Config // Loaded configuration from config.yaml
 )
 
+// rootCmd is the main cobra command for the broadcast tool.
 var rootCmd = &cobra.Command{
 	Use:   "broadcast",
 	Short: "A simple transaction broadcaster",
@@ -56,6 +79,9 @@ var rootCmd = &cobra.Command{
 	},
 }
 
+// loadConfig reads and parses the config.yaml file.
+// It first checks the executable directory, then falls back to the current working directory.
+// Returns an error if the config file cannot be found or parsed.
 func loadConfig() error {
 	// Get the executable directory
 	exePath, err := os.Executable()
@@ -84,6 +110,11 @@ func loadConfig() error {
 	return nil
 }
 
+// processInput handles the main execution flow:
+// 1. Loads configuration from config.yaml
+// 2. Reads transaction hex from flag or stdin
+// 3. Validates the hex string
+// 4. Broadcasts the transaction to ARC
 func processInput() {
 	// Load configuration from config.yaml
 	if err := loadConfig(); err != nil {
@@ -114,6 +145,9 @@ func processInput() {
 	broadcastTransaction(txString)
 }
 
+// readTxFromStdin reads transaction hex from stdin.
+// It strips all whitespace and control characters, returning only printable ASCII characters.
+// This allows for flexible input formatting (newlines, spaces, etc.).
 func readTxFromStdin() string {
 	scanner := bufio.NewScanner(os.Stdin)
 	var txHex strings.Builder
@@ -138,6 +172,10 @@ func readTxFromStdin() string {
 	return txHex.String()
 }
 
+// broadcastTransaction sends a raw transaction to the ARC network.
+// It selects the appropriate endpoint (mainnet/testnet) based on the --testnet flag,
+// creates an ARC client, broadcasts the transaction, and displays the result.
+// If --monitor flag is set, it will continuously poll the transaction status.
 func broadcastTransaction(rawTx string) {
 	// Use config based on testnet flag
 	var url, key string
@@ -181,6 +219,10 @@ func broadcastTransaction(rawTx string) {
 	}
 }
 
+// monitorTransaction continuously polls the transaction status until it reaches a final state.
+// Final states are: MINED, REJECTED, or DOUBLE_SPEND_ATTEMPTED.
+// The polling interval is controlled by the --poll-rate flag (default: 5 seconds).
+// Displays timestamped status updates and block information if available.
 func monitorTransaction(client *arc.ARCClient, txid string) {
 	fmt.Printf("\nMonitoring transaction status (polling every %d seconds)...\n", pollRate)
 	fmt.Println("Press Ctrl+C to stop monitoring")
@@ -214,6 +256,8 @@ func monitorTransaction(client *arc.ARCClient, txid string) {
 	}
 }
 
+// init initializes the cobra command flags.
+// This function is automatically called by Go before main() executes.
 func init() {
 	rootCmd.Flags().StringVarP(&raw, "raw", "r", "", "Raw transaction hex to broadcast")
 	rootCmd.Flags().BoolVarP(&monitor, "monitor", "m", false, "Monitor transaction status until final state")
@@ -221,6 +265,8 @@ func init() {
 	rootCmd.Flags().BoolVarP(&testnet, "testnet", "t", false, "Use testnet configuration from config.yaml")
 }
 
+// main is the entry point for the broadcast command.
+// It executes the cobra root command which handles flag parsing and command execution.
 func main() {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -228,6 +274,8 @@ func main() {
 	}
 }
 
+// isHex validates that a string contains only hexadecimal characters (0-9, a-f, A-F).
+// Returns true if the string is valid hex, false otherwise.
 func isHex(hex string) bool {
 	match, _ := regexp.MatchString("^[0-9a-fA-F]+$", hex)
 	return match
