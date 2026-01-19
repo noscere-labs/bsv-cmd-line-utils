@@ -41,6 +41,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Transaction size estimation constants
+const (
+	inputSize  = 148 // Approximate bytes per input
+	outputSize = 34  // Approximate bytes per output
+	baseTxSize = 10  // Base transaction overhead
+	minFee     = 100 // Minimum fee in satoshis
+)
+
 // Command-line flags
 var (
 	wif       string // WIF private key for signing
@@ -58,29 +66,32 @@ var rootCmd = &cobra.Command{
 	Use:   "carve",
 	Short: "Create and sign a BSV transaction from a WIF",
 	Long:  "A command line tool that creates a signed transaction from a WIF private key, sending satoshis to a destination address",
-	Run: func(cmd *cobra.Command, args []string) {
-		if wif == "" || address == "" {
-			cmd.Help()
-			fmt.Fprintf(os.Stderr, "\nError: --wif and --address are required\n")
-			os.Exit(1)
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateFlags(cmd); err != nil {
+			return err
 		}
-
-		if split < 1 {
-			cmd.Help()
-			fmt.Fprintf(os.Stderr, "\nError: --split must be at least 1\n")
-			os.Exit(1)
-		}
-
-		if split > 1 && sats == 0 {
-			cmd.Help()
-			fmt.Fprintf(os.Stderr, "\nError: --split requires a specific amount (--sats), cannot be used with send-all mode\n")
-			os.Exit(1)
-		}
-
-		if err := carveTransaction(); err != nil {
-			log.Fatalf("Error: %v", err)
-		}
+		return carveTransaction()
 	},
+}
+
+// validateFlags checks that required flags are present and have valid values.
+func validateFlags(cmd *cobra.Command) error {
+	if wif == "" || address == "" {
+		cmd.Help()
+		return fmt.Errorf("--wif and --address are required")
+	}
+
+	if split < 1 {
+		cmd.Help()
+		return fmt.Errorf("--split must be at least 1")
+	}
+
+	if split > 1 && sats == 0 {
+		cmd.Help()
+		return fmt.Errorf("--split requires a specific amount (--sats), cannot be used with send-all mode")
+	}
+
+	return nil
 }
 
 // UTXO represents an unspent transaction output from the WhatsOnChain API.
@@ -91,19 +102,44 @@ type UTXO struct {
 }
 
 // carveTransaction is the main transaction creation workflow.
-// It performs the following steps:
-// 1. Derives the private key and source address from the WIF
-// 2. Fetches all UTXOs for the source address from WhatsOnChain
-// 3. Selects the optimal set of UTXOs to cover the amount + fees
-// 4. Builds and signs the transaction
-// 5. Outputs the raw transaction hex to stdout
 func carveTransaction() error {
 	ctx := context.Background()
 
 	// 1. Derive private key and address from WIF
+	privKey, sourceAddress, err := deriveKeyAndAddress()
+	if err != nil {
+		return err
+	}
+
+	// 2. Fetch UTXOs from WhatsOnChain
+	utxos, err := fetchUTXOs(ctx, sourceAddress.AddressString)
+	if err != nil {
+		return err
+	}
+
+	// 3. Select appropriate UTXOs
+	selectedUTXOs, err := selectAppropriateUTXOs(utxos)
+	if err != nil {
+		return err
+	}
+
+	// 4. Build the transaction
+	tx, err := buildTransaction(privKey, sourceAddress, address, selectedUTXOs, sats, split)
+	if err != nil {
+		return fmt.Errorf("failed to build transaction: %w", err)
+	}
+
+	// 5. Output the raw transaction hex to stdout
+	fmt.Println(tx.String())
+
+	return nil
+}
+
+// deriveKeyAndAddress parses the WIF and derives the source address.
+func deriveKeyAndAddress() (*ec.PrivateKey, *script.Address, error) {
 	privKey, err := ec.PrivateKeyFromWif(wif)
 	if err != nil {
-		return fmt.Errorf("failed to parse WIF: %w", err)
+		return nil, nil, fmt.Errorf("failed to parse WIF: %w", err)
 	}
 
 	if debug {
@@ -114,78 +150,78 @@ func carveTransaction() error {
 	// Note: NewAddressFromPublicKey takes mainnet bool, not testnet bool
 	sourceAddress, err := script.NewAddressFromPublicKey(privKey.PubKey(), !testnet)
 	if err != nil {
-		return fmt.Errorf("failed to derive source address: %w", err)
+		return nil, nil, fmt.Errorf("failed to derive source address: %w", err)
 	}
 
 	if debug {
 		log.Printf("Source address: %s", sourceAddress.AddressString)
 	}
 
-	// 2. Fetch UTXOs from WhatsOnChain
-	utxos, err := getUnspentOutputs(ctx, sourceAddress.AddressString)
+	return privKey, sourceAddress, nil
+}
+
+// fetchUTXOs retrieves UTXOs from WhatsOnChain and validates them.
+func fetchUTXOs(ctx context.Context, addr string) ([]*UTXO, error) {
+	utxos, err := getUnspentOutputs(ctx, addr)
 	if err != nil {
-		return fmt.Errorf("failed to fetch UTXOs: %w", err)
+		return nil, fmt.Errorf("failed to fetch UTXOs: %w", err)
 	}
 
 	if len(utxos) == 0 {
-		return fmt.Errorf("no UTXOs found for address %s", sourceAddress.AddressString)
+		return nil, fmt.Errorf("no UTXOs found for address %s", addr)
 	}
 
 	if debug {
 		log.Printf("Found %d UTXO(s)", len(utxos))
 	}
 
-	// 3. Select appropriate UTXOs
-	var selectedUTXOs []*UTXO
+	return utxos, nil
+}
+
+// selectAppropriateUTXOs selects UTXOs based on the target amount.
+func selectAppropriateUTXOs(utxos []*UTXO) ([]*UTXO, error) {
 	if sats == 0 {
 		// Send all funds - use all UTXOs
 		if debug {
 			log.Printf("Sending all available funds")
 		}
-		selectedUTXOs = utxos
-	} else {
-		// Select minimum UTXOs needed to cover the amount
-		selectedUTXOs, err = selectUTXOs(utxos, sats, feePerKb)
-		if err != nil {
-			return fmt.Errorf("UTXO selection failed: %w", err)
-		}
+		return utxos, nil
 	}
 
-	// 4. Build the transaction
-	tx, err := buildTransaction(privKey, sourceAddress, address, selectedUTXOs, sats, split)
+	// Select minimum UTXOs needed to cover the amount
+	selected, err := selectUTXOs(utxos, sats, feePerKb)
 	if err != nil {
-		return fmt.Errorf("failed to build transaction: %w", err)
+		return nil, fmt.Errorf("UTXO selection failed: %w", err)
 	}
 
-	// 5. Output the raw transaction hex to stdout
-	rawHex := tx.String()
-	fmt.Println(rawHex)
-
-	return nil
+	return selected, nil
 }
 
-// getUnspentOutputs fetches all unspent transaction outputs (UTXOs) for a given address
-// from the WhatsOnChain API using the /unspent/all endpoint.
-//
-// The function:
-// - Queries the appropriate network (mainnet/testnet) based on the --testnet flag
-// - Filters out UTXOs that are already spent in mempool transactions
-// - Returns an array of available UTXOs sorted by the API
-//
-// Returns an error if the API call fails or if no UTXOs are available.
+// getUnspentOutputs fetches all unspent transaction outputs (UTXOs) for a given address.
 func getUnspentOutputs(ctx context.Context, addr string) ([]*UTXO, error) {
 	network := "main"
 	if testnet {
 		network = "test"
 	}
 
-	// Use direct HTTP call with /unspent/all to get all UTXOs
 	url := fmt.Sprintf("https://api.whatsonchain.com/v1/bsv/%s/address/%s/unspent/all", network, addr)
 
 	if debug {
 		log.Printf("Fetching UTXOs from WhatsOnChain (%s network)...", network)
 	}
 
+	// Fetch from API
+	utxos, err := fetchUTXOsFromAPI(url)
+	if err != nil {
+		return nil, err
+	}
+
+	// Filter and deduplicate
+	return filterAndDeduplicateUTXOs(utxos, addr)
+}
+
+// fetchUTXOsFromAPI makes the HTTP request to WhatsOnChain.
+func fetchUTXOsFromAPI(url string) ([]*UTXO, error) {
 	resp, err := http.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch UTXOs: %w", err)
@@ -202,24 +238,29 @@ func getUnspentOutputs(ctx context.Context, addr string) ([]*UTXO, error) {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	// Parse the response
-	type WOCUnspent struct {
-		Height              int    `json:"height"`
-		TxPos               int    `json:"tx_pos"`
-		TxHash              string `json:"tx_hash"`
-		Value               uint64 `json:"value"`
-		IsSpentInMempoolTx  bool   `json:"isSpentInMempoolTx"`
-		Status              string `json:"status"`
-	}
+	return parseUTXOResponse(body)
+}
 
-	// The /unspent/all endpoint returns an object with address, script, result array, and error
-	type WOCUnspentAllResponse struct {
-		Address string        `json:"address"`
-		Script  string        `json:"script"`
-		Result  []WOCUnspent  `json:"result"`
-		Error   string        `json:"error"`
-	}
+// WOCUnspent represents a single UTXO from WhatsOnChain API.
+type WOCUnspent struct {
+	Height             int    `json:"height"`
+	TxPos              int    `json:"tx_pos"`
+	TxHash             string `json:"tx_hash"`
+	Value              uint64 `json:"value"`
+	IsSpentInMempoolTx bool   `json:"isSpentInMempoolTx"`
+	Status             string `json:"status"`
+}
 
+// WOCUnspentAllResponse is the response structure from /unspent/all endpoint.
+type WOCUnspentAllResponse struct {
+	Address string       `json:"address"`
+	Script  string       `json:"script"`
+	Result  []WOCUnspent `json:"result"`
+	Error   string       `json:"error"`
+}
+
+// parseUTXOResponse parses the WhatsOnChain API response.
+func parseUTXOResponse(body []byte) ([]*UTXO, error) {
 	var response WOCUnspentAllResponse
 	if err := json.Unmarshal(body, &response); err != nil {
 		return nil, fmt.Errorf("failed to parse UTXOs: %w", err)
@@ -227,10 +268,6 @@ func getUnspentOutputs(ctx context.Context, addr string) ([]*UTXO, error) {
 
 	if response.Error != "" {
 		return nil, fmt.Errorf("API error: %s", response.Error)
-	}
-
-	if len(response.Result) == 0 {
-		return nil, fmt.Errorf("no UTXOs found for address %s", addr)
 	}
 
 	utxos := make([]*UTXO, 0, len(response.Result))
@@ -253,30 +290,47 @@ func getUnspentOutputs(ctx context.Context, addr string) ([]*UTXO, error) {
 		})
 	}
 
-	if len(utxos) == 0 {
-		return nil, fmt.Errorf("no available UTXOs for address %s (all are spent in mempool)", addr)
-	}
-
 	return utxos, nil
 }
 
-// selectUTXOs implements a largest-first UTXO selection algorithm to minimize transaction size.
-//
-// The algorithm:
-// 1. Sorts UTXOs by value in descending order (largest first)
-// 2. Iteratively adds UTXOs until the total covers the target amount plus fees
-// 3. Estimates fees dynamically as more inputs are added (148 bytes per input)
-// 4. Enforces a minimum fee of 100 satoshis
-//
-// This approach minimizes the number of inputs required, reducing transaction size and fees.
-//
-// Returns the selected UTXOs or an error if insufficient funds are available.
+// filterAndDeduplicateUTXOs removes spent and duplicate UTXOs.
+func filterAndDeduplicateUTXOs(utxos []*UTXO, addr string) ([]*UTXO, error) {
+	if len(utxos) == 0 {
+		return nil, fmt.Errorf("no UTXOs found for address %s", addr)
+	}
+
+	// Deduplicate by txid:vout
+	seen := make(map[string]bool)
+	dedupedUTXOs := make([]*UTXO, 0, len(utxos))
+
+	for _, utxo := range utxos {
+		key := fmt.Sprintf("%s:%d", utxo.TxHash, utxo.TxPos)
+		if !seen[key] {
+			seen[key] = true
+			dedupedUTXOs = append(dedupedUTXOs, utxo)
+		} else if debug {
+			log.Printf("  Skipping duplicate UTXO: %s", key)
+		}
+	}
+
+	if len(dedupedUTXOs) < len(utxos) && debug {
+		log.Printf("Removed %d duplicate UTXO(s)", len(utxos)-len(dedupedUTXOs))
+	}
+
+	if len(dedupedUTXOs) == 0 {
+		return nil, fmt.Errorf("no available UTXOs for address %s (all are spent in mempool)", addr)
+	}
+
+	return dedupedUTXOs, nil
+}
+
+// selectUTXOs implements a largest-first UTXO selection algorithm.
 func selectUTXOs(utxos []*UTXO, targetAmount uint64, feePerKb uint64) ([]*UTXO, error) {
 	if len(utxos) == 0 {
 		return nil, fmt.Errorf("no UTXOs available")
 	}
 
-	// Sort UTXOs by value (largest first) for better selection
+	// Sort UTXOs by value (largest first)
 	sortedUTXOs := make([]*UTXO, len(utxos))
 	copy(sortedUTXOs, utxos)
 	sort.Slice(sortedUTXOs, func(i, j int) bool {
@@ -286,23 +340,12 @@ func selectUTXOs(utxos []*UTXO, targetAmount uint64, feePerKb uint64) ([]*UTXO, 
 	var selected []*UTXO
 	var totalValue uint64
 
-	// Estimate fee per input (roughly 148 bytes per input)
-	const inputSize = 148
-	// Base transaction overhead + output sizes (2 outputs: payment + change, ~34 bytes each)
-	const baseTxSize = 10 + 34 + 34
-
 	for _, utxo := range sortedUTXOs {
 		selected = append(selected, utxo)
 		totalValue += utxo.Value
 
 		// Calculate estimated fee with current number of inputs
-		estimatedSize := uint64(len(selected)*inputSize + baseTxSize)
-		estimatedFee := (estimatedSize * feePerKb) / 1000
-
-		// Enforce minimum fee of 100 satoshis
-		if estimatedFee < 100 {
-			estimatedFee = 100
-		}
+		estimatedFee := calculateFee(len(selected), 2, feePerKb) // 2 outputs: payment + change
 
 		// Check if we have enough to cover target amount + fee
 		if totalValue >= targetAmount+estimatedFee {
@@ -315,39 +358,25 @@ func selectUTXOs(utxos []*UTXO, targetAmount uint64, feePerKb uint64) ([]*UTXO, 
 	}
 
 	// Not enough funds
-	estimatedSize := uint64(len(selected)*inputSize + baseTxSize)
-	estimatedFee := (estimatedSize * feePerKb) / 1000
-
-	// Enforce minimum fee of 100 satoshis
-	if estimatedFee < 100 {
-		estimatedFee = 100
-	}
-
+	estimatedFee := calculateFee(len(selected), 2, feePerKb)
 	return nil, fmt.Errorf("insufficient funds: have %d satoshis, need %d (amount: %d + fee: ~%d)",
 		totalValue, targetAmount+estimatedFee, targetAmount, estimatedFee)
 }
 
-// buildTransaction constructs and signs a BSV transaction from the selected UTXOs.
-//
-// The function:
-// 1. Creates a new transaction and adds all selected UTXOs as inputs
-// 2. Adds the payment output(s) to the destination address (if amount > 0)
-//    - If numOutputs > 1, splits the amount equally across outputs
-//    - Any remainder is added to the last output
-// 3. Calculates transaction fees based on estimated size
-// 4. Adds a change output back to the source address (if change > dust limit)
-// 5. Signs all inputs with the provided private key
-//
-// Fee calculation:
-//   - Estimates size: inputs*148 + outputs*34 + 10 (overhead)
-//   - Applies fee rate: (size * feePerKb) / 1000
-//   - Enforces minimum fee of 100 satoshis
-//
-// Change handling:
-//   - Change below dust limit is added to the fee instead
-//   - Default dust limit is 1 satoshi (configurable via --dust flag)
-//
-// Returns the signed transaction or an error if building/signing fails.
+// calculateFee estimates the transaction fee based on size.
+func calculateFee(numInputs, numOutputs int, feePerKb uint64) uint64 {
+	estimatedSize := uint64(numInputs*inputSize + numOutputs*outputSize + baseTxSize)
+	fee := (estimatedSize * feePerKb) / 1000
+
+	// Enforce minimum fee
+	if fee < minFee {
+		fee = minFee
+	}
+
+	return fee
+}
+
+// buildTransaction constructs and signs a BSV transaction.
 func buildTransaction(privKey *ec.PrivateKey, sourceAddr *script.Address, destAddrStr string, utxos []*UTXO, amount uint64, numOutputs int) (*transaction.Transaction, error) {
 	// Create a new transaction
 	tx := transaction.NewTransaction()
@@ -365,12 +394,44 @@ func buildTransaction(privKey *ec.PrivateKey, sourceAddr *script.Address, destAd
 	}
 
 	// Add all UTXOs as inputs
+	totalInput, err := addInputs(tx, utxos, sourceAddr, unlocker)
+	if err != nil {
+		return nil, err
+	}
+
+	// Add payment outputs
+	if amount > 0 {
+		if err := addPaymentOutputs(tx, destAddr, destAddrStr, amount, numOutputs); err != nil {
+			return nil, err
+		}
+	}
+
+	// Calculate fee and add change output
+	if err := addChangeOutput(tx, sourceAddr, totalInput, amount); err != nil {
+		return nil, err
+	}
+
+	// Sign all inputs
+	if err := tx.Sign(); err != nil {
+		return nil, fmt.Errorf("failed to sign transaction: %w", err)
+	}
+
+	if debug {
+		log.Printf("Transaction ID: %s", tx.TxID().String())
+	}
+
+	return tx, nil
+}
+
+// addInputs adds all UTXOs as transaction inputs.
+func addInputs(tx *transaction.Transaction, utxos []*UTXO, sourceAddr *script.Address, unlocker *p2pkh.P2PKH) (uint64, error) {
 	var totalInput uint64
+
 	for _, utxo := range utxos {
 		// Create the locking script from the source address (P2PKH)
 		lockingScript, err := p2pkh.Lock(sourceAddr)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create locking script: %w", err)
+			return 0, fmt.Errorf("failed to create locking script: %w", err)
 		}
 
 		// Add input
@@ -382,7 +443,7 @@ func buildTransaction(privKey *ec.PrivateKey, sourceAddr *script.Address, destAd
 			unlocker,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("failed to add input: %w", err)
+			return 0, fmt.Errorf("failed to add input: %w", err)
 		}
 
 		totalInput += utxo.Value
@@ -392,56 +453,62 @@ func buildTransaction(privKey *ec.PrivateKey, sourceAddr *script.Address, destAd
 		log.Printf("Total input: %d satoshis", totalInput)
 	}
 
-	// Add output(s) to destination address
-	if amount > 0 {
-		destLockingScript, err := p2pkh.Lock(destAddr)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create destination locking script: %w", err)
+	return totalInput, nil
+}
+
+// addPaymentOutputs adds payment outputs to the destination address.
+func addPaymentOutputs(tx *transaction.Transaction, destAddr *script.Address, destAddrStr string, amount uint64, numOutputs int) error {
+	destLockingScript, err := p2pkh.Lock(destAddr)
+	if err != nil {
+		return fmt.Errorf("failed to create destination locking script: %w", err)
+	}
+
+	if numOutputs < 1 {
+		numOutputs = 1
+	}
+
+	// Calculate amount per output and remainder
+	amountPerOutput := amount / uint64(numOutputs)
+	remainder := amount % uint64(numOutputs)
+
+	// Add outputs with equal amounts
+	for i := 0; i < numOutputs; i++ {
+		outputAmount := amountPerOutput
+
+		// Add remainder to the last output
+		if i == numOutputs-1 {
+			outputAmount += remainder
 		}
 
-		if numOutputs < 1 {
-			numOutputs = 1
-		}
+		tx.AddOutput(&transaction.TransactionOutput{
+			Satoshis:      outputAmount,
+			LockingScript: destLockingScript,
+		})
 
-		// Calculate amount per output and remainder
-		amountPerOutput := amount / uint64(numOutputs)
-		remainder := amount % uint64(numOutputs)
-
-		// Add outputs with equal amounts
-		for i := 0; i < numOutputs; i++ {
-			outputAmount := amountPerOutput
-
-			// Add remainder to the last output
-			if i == numOutputs-1 {
-				outputAmount += remainder
-			}
-
-			tx.AddOutput(&transaction.TransactionOutput{
-				Satoshis:      outputAmount,
-				LockingScript: destLockingScript,
-			})
-
-			if debug {
-				log.Printf("Output %d to %s: %d satoshis", i+1, destAddrStr, outputAmount)
-			}
-		}
-
-		if debug && remainder > 0 {
-			log.Printf("Remainder of %d satoshis added to last output", remainder)
+		if debug {
+			log.Printf("Output %d to %s: %d satoshis", i+1, destAddrStr, outputAmount)
 		}
 	}
 
-	// Calculate fees and add change output
-	// Estimate size: each input ~148 bytes, each output ~34 bytes, overhead ~10 bytes
-	estimatedSize := uint64(len(tx.Inputs)*148 + len(tx.Outputs)*34 + 10)
+	if debug && remainder > 0 {
+		log.Printf("Remainder of %d satoshis added to last output", remainder)
+	}
+
+	return nil
+}
+
+// addChangeOutput calculates fees and adds a change output if needed.
+func addChangeOutput(tx *transaction.Transaction, sourceAddr *script.Address, totalInput, amount uint64) error {
+	// Calculate fees
+	estimatedSize := uint64(len(tx.Inputs)*inputSize + len(tx.Outputs)*outputSize + baseTxSize)
 	fee := (estimatedSize * feePerKb) / 1000
 
 	// Add extra for the change output size
-	fee += 34 * feePerKb / 1000
+	fee += uint64(outputSize) * feePerKb / 1000
 
-	// Enforce minimum fee of 100 satoshis
-	if fee < 100 {
-		fee = 100
+	// Enforce minimum fee
+	if fee < minFee {
+		fee = minFee
 	}
 
 	if debug {
@@ -454,7 +521,7 @@ func buildTransaction(privKey *ec.PrivateKey, sourceAddr *script.Address, destAd
 		// Add change output back to source address
 		changeLockingScript, err := p2pkh.Lock(sourceAddr)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create change locking script: %w", err)
+			return fmt.Errorf("failed to create change locking script: %w", err)
 		}
 
 		tx.AddOutput(&transaction.TransactionOutput{
@@ -465,27 +532,14 @@ func buildTransaction(privKey *ec.PrivateKey, sourceAddr *script.Address, destAd
 		if debug {
 			log.Printf("Change to %s: %d satoshis", sourceAddr.AddressString, change)
 		}
-	} else if change > 0 {
-		if debug {
-			log.Printf("Change (%d satoshis) below dust limit, adding to fee", change)
-		}
+	} else if change > 0 && debug {
+		log.Printf("Change (%d satoshis) below dust limit, adding to fee", change)
 	}
 
-	// Sign all inputs
-	if err := tx.Sign(); err != nil {
-		return nil, fmt.Errorf("failed to sign transaction: %w", err)
-	}
-
-	txid := tx.TxID()
-	if debug {
-		log.Printf("Transaction ID: %s", txid.String())
-	}
-
-	return tx, nil
+	return nil
 }
 
-// init initializes the cobra command flags and marks required flags.
-// This function is automatically called by Go before main() executes.
+// init initializes the cobra command flags.
 func init() {
 	rootCmd.Flags().StringVarP(&wif, "wif", "w", "", "Source WIF private key (required)")
 	rootCmd.Flags().StringVarP(&address, "address", "a", "", "Destination address (required)")
@@ -501,7 +555,6 @@ func init() {
 }
 
 // main is the entry point for the carve command.
-// It executes the cobra root command which handles flag parsing and command execution.
 func main() {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

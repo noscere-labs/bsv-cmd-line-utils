@@ -1,186 +1,130 @@
+// Package main implements a Bitcoin SV transaction status checker using ARC.
+//
+// This tool checks the status of transactions on the BSV network via ARC endpoints
+// and optionally monitors their status until they reach a final state.
+//
+// Features:
+//   - Config-based mainnet/testnet endpoint management via config.yaml
+//   - Real-time transaction status monitoring with customizable polling
+//   - Support for stdin, flag, or command-line argument input
+//   - Automatic transaction lifecycle tracking
+//
+// Usage:
+//
+//	txstatus <txid>                          # Check by argument
+//	txstatus -i <txid>                       # Check by flag
+//	echo <txid> | txstatus                   # Check from stdin
+//	txstatus <txid> -t                       # Check on testnet
+//	txstatus <txid> -m                       # Monitor until final state
 package main
 
 import (
-	"bufio"
 	"fmt"
-	"log"
 	"os"
-	"path/filepath"
-	"regexp"
-	"strings"
 	"time"
 
-	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
-
 	"github.com/mrz1836/go-template/internal/arc"
+	"github.com/mrz1836/go-template/internal/cli"
+	"github.com/mrz1836/go-template/internal/config"
+	"github.com/spf13/cobra"
 )
 
-type ARCConfig struct {
-	URL     string `yaml:"url"`
-	APIKey  string `yaml:"api_key"`
-	Timeout string `yaml:"timeout"`
-}
-
-type PollingConfig struct {
-	Interval      string  `yaml:"interval"`
-	MaxRetries    int     `yaml:"max_retries"`
-	BackoffFactor float64 `yaml:"backoff_factor"`
-}
-
-type TargetsConfig struct {
-	Default       string `yaml:"default"`
-	WaitForMining bool   `yaml:"wait_for_mining"`
-}
-
-type Config struct {
-	ARCMainnet ARCConfig     `yaml:"arc-mainnet"`
-	ARCTestnet ARCConfig     `yaml:"arc-testnet"`
-	Polling    PollingConfig `yaml:"polling"`
-	Targets    TargetsConfig `yaml:"targets"`
-}
-
+// Command-line flags
 var (
-	txid     string
-	testnet  bool
-	monitor  bool
-	pollRate int
-	config   Config
+	txid     string // Transaction ID provided via flag
+	testnet  bool   // Use testnet instead of mainnet
+	monitor  bool   // Enable transaction status monitoring
+	pollRate int    // Polling interval in seconds for monitoring
 )
 
-// https://arc.taal.com
-
+// rootCmd is the main cobra command for the txstatus tool.
 var rootCmd = &cobra.Command{
 	Use:   "txstatus [txid]",
 	Short: "Check transaction status",
 	Long:  "A command line tool that checks transaction status on ARC. Accepts txid as argument or from stdin",
 	Args:  cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		var transactionID string
-
-		// Get txid from command line argument if provided
-		if len(args) > 0 {
-			transactionID = args[0]
-		} else if txid != "" {
-			// Use flag value if provided
-			transactionID = txid
-		} else {
-			// Check if stdin has data
-			stat, _ := os.Stdin.Stat()
-			if (stat.Mode() & os.ModeCharDevice) == 0 {
-				// Data is being piped to stdin
-				transactionID = readTxidFromStdin()
-			}
+	RunE: func(cmd *cobra.Command, args []string) error {
+		transactionID, err := getTransactionID(cmd, args)
+		if err != nil {
+			return err
 		}
 
 		if transactionID == "" {
 			cmd.Help()
-			fmt.Fprintf(os.Stderr, "\nError: no txid provided\n")
-			os.Exit(1)
+			return fmt.Errorf("no txid provided")
 		}
 
 		// Validate it's a hex string
-		if !isHex(transactionID) {
-			log.Fatalf("Error: txid is not a valid hex string: %s", transactionID)
+		if !cli.IsValidHex(transactionID) {
+			return fmt.Errorf("txid is not a valid hex string: %s", transactionID)
 		}
 
-		checkTransactionStatus(transactionID)
+		return checkTransactionStatus(transactionID)
 	},
 }
 
-func loadConfig() error {
-	// Get the executable directory
-	exePath, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("failed to get executable path: %w", err)
-	}
-	exeDir := filepath.Dir(exePath)
-
-	// Try config.yaml in the executable directory first
-	configPath := filepath.Join(exeDir, "config.yaml")
-
-	// If not found, try the current working directory
-	if _, statErr := os.Stat(configPath); os.IsNotExist(statErr) {
-		configPath = "config.yaml"
+// getTransactionID retrieves the transaction ID from argument, flag, or stdin.
+func getTransactionID(cmd *cobra.Command, args []string) (string, error) {
+	// Get txid from command line argument if provided
+	if len(args) > 0 {
+		return args[0], nil
 	}
 
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return fmt.Errorf("failed to read config file: %w", err)
+	// Use flag value if provided
+	if txid != "" {
+		return txid, nil
 	}
 
-	if err = yaml.Unmarshal(data, &config); err != nil {
-		return fmt.Errorf("failed to parse config file: %w", err)
+	// Check if stdin has data
+	stat, _ := os.Stdin.Stat()
+	if (stat.Mode() & os.ModeCharDevice) == 0 {
+		// Data is being piped to stdin
+		return cli.ReadHexFromReader(os.Stdin)
 	}
 
-	return nil
+	return "", nil
 }
 
-func readTxidFromStdin() string {
-	scanner := bufio.NewScanner(os.Stdin)
-	var txidBuilder strings.Builder
-
-	// Read all text via stdin into a single string with no spaces or control characters
-	for scanner.Scan() {
-		line := scanner.Text()
-		// Remove all whitespace and control characters
-		cleaned := strings.Map(func(r rune) rune {
-			if r > 32 && r < 127 {
-				return r
-			}
-			return -1
-		}, line)
-		txidBuilder.WriteString(cleaned)
-	}
-
-	if err := scanner.Err(); err != nil {
-		log.Fatalf("Error reading input: %v", err)
-	}
-
-	return txidBuilder.String()
-}
-
-func checkTransactionStatus(txid string) {
+// checkTransactionStatus loads config and checks/monitors the transaction status.
+func checkTransactionStatus(txid string) error {
 	// Load configuration from config.yaml
-	if err := loadConfig(); err != nil {
-		log.Fatalf("Error loading configuration: %v", err)
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("loading configuration: %w", err)
 	}
 
-	// Use config based on testnet flag
-	var url, key string
+	// Validate config
+	if err := cfg.Validate(testnet); err != nil {
+		return err
+	}
+
+	arcConfig := cfg.GetARCConfig(testnet)
+
 	if testnet {
-		url = config.ARCTestnet.URL
-		key = config.ARCTestnet.APIKey
 		fmt.Println("Using testnet configuration")
 	} else {
-		url = config.ARCMainnet.URL
-		key = config.ARCMainnet.APIKey
 		fmt.Println("Using mainnet configuration")
 	}
 
-	// Validate ARC URL is available
-	if url == "" {
-		log.Fatal("Error: ARC URL is required in config.yaml")
-	}
-
 	// Create ARC client
-	client := arc.NewARCClient(url, key)
+	client := arc.NewARCClient(arcConfig.URL, arcConfig.APIKey)
 
 	if monitor {
 		// Continuous monitoring
-		monitorTransaction(client, txid)
-	} else {
-		// Single status check
-		getStatus(client, txid)
+		return monitorTransaction(client, txid)
 	}
+
+	// Single status check
+	return getStatus(client, txid)
 }
 
-func getStatus(client *arc.ARCClient, txid string) {
+// getStatus performs a single transaction status check.
+func getStatus(client *arc.ARCClient, txid string) error {
 	fmt.Printf("Checking status for transaction: %s\n\n", txid)
 
 	status, err := client.GetTransactionStatus(txid)
 	if err != nil {
-		log.Fatalf("Error getting transaction status: %v", err)
+		return fmt.Errorf("getting transaction status: %w", err)
 	}
 
 	fmt.Printf("Status: %s\n", status.TxStatus)
@@ -204,9 +148,12 @@ func getStatus(client *arc.ARCClient, txid string) {
 	} else {
 		fmt.Printf("\n⏳ Transaction is still pending (use --monitor to watch for changes)\n")
 	}
+
+	return nil
 }
 
-func monitorTransaction(client *arc.ARCClient, txid string) {
+// monitorTransaction continuously polls the transaction status until it reaches a final state.
+func monitorTransaction(client *arc.ARCClient, txid string) error {
 	fmt.Printf("Monitoring transaction: %s\n", txid)
 	fmt.Printf("Polling every %d seconds...\n", pollRate)
 	fmt.Println("Press Ctrl+C to stop monitoring")
@@ -215,7 +162,7 @@ func monitorTransaction(client *arc.ARCClient, txid string) {
 	// Do initial check immediately
 	status, err := client.GetTransactionStatus(txid)
 	if err != nil {
-		log.Fatalf("Error getting transaction status: %v", err)
+		return fmt.Errorf("getting transaction status: %w", err)
 	}
 
 	timestamp := time.Now().Format("15:04:05")
@@ -229,7 +176,7 @@ func monitorTransaction(client *arc.ARCClient, txid string) {
 	// If already final, exit
 	if arc.IsTransactionFinal(status.TxStatus) {
 		fmt.Printf("\n✓ Transaction is already in final state: %s\n", status.TxStatus)
-		return
+		return nil
 	}
 
 	// Continue monitoring
@@ -241,7 +188,7 @@ func monitorTransaction(client *arc.ARCClient, txid string) {
 
 		status, err := client.GetTransactionStatus(txid)
 		if err != nil {
-			log.Printf("Error getting transaction status: %v", err)
+			fmt.Fprintf(os.Stderr, "Error getting transaction status: %v\n", err)
 			continue
 		}
 
@@ -259,8 +206,11 @@ func monitorTransaction(client *arc.ARCClient, txid string) {
 			break
 		}
 	}
+
+	return nil
 }
 
+// init initializes the cobra command flags.
 func init() {
 	rootCmd.Flags().StringVarP(&txid, "txid", "i", "", "Transaction ID to check")
 	rootCmd.Flags().BoolVarP(&monitor, "monitor", "m", false, "Monitor transaction status until final state")
@@ -268,14 +218,10 @@ func init() {
 	rootCmd.Flags().BoolVarP(&testnet, "testnet", "t", false, "Use testnet configuration from config.yaml")
 }
 
+// main is the entry point for the txstatus command.
 func main() {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-}
-
-func isHex(hex string) bool {
-	match, _ := regexp.MatchString("^[0-9a-fA-F]+$", hex)
-	return match
 }

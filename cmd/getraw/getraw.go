@@ -20,14 +20,12 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"log"
 	"os"
-	"regexp"
-	"strings"
 
+	"github.com/mrz1836/go-template/internal/cli"
 	"github.com/mrz1836/go-whatsonchain"
 	"github.com/spf13/cobra"
 )
@@ -44,64 +42,46 @@ var rootCmd = &cobra.Command{
 	Short: "Get raw transaction data",
 	Long:  "A command line tool that retrieves raw transaction data from WhatsOnChain. Accepts txid as argument or from stdin",
 	Args:  cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		var transactionID string
-
-		// Get txid from command line argument if provided
-		if len(args) > 0 {
-			transactionID = args[0]
-		} else if txid != "" {
-			// Use flag value if provided
-			transactionID = txid
-		} else {
-			// Check if stdin has data
-			stat, _ := os.Stdin.Stat()
-			if (stat.Mode() & os.ModeCharDevice) == 0 {
-				// Data is being piped to stdin
-				transactionID = readTxidFromStdin()
-			}
+	RunE: func(cmd *cobra.Command, args []string) error {
+		transactionID, err := getTransactionID(cmd, args)
+		if err != nil {
+			return err
 		}
 
 		if transactionID == "" {
 			cmd.Help()
-			fmt.Fprintf(os.Stderr, "\nError: no txid provided\n")
-			os.Exit(1)
+			return fmt.Errorf("no txid provided")
 		}
 
 		// Validate it's a hex string
-		if !isHex(transactionID) {
-			log.Fatalf("Error: txid is not a valid hex string: %s", transactionID)
+		if !cli.IsValidHex(transactionID) {
+			return fmt.Errorf("txid is not a valid hex string: %s", transactionID)
 		}
 
-		getRawFromWhatsOnChain(transactionID)
+		return getRawFromWhatsOnChain(transactionID)
 	},
 }
 
-// readTxidFromStdin reads a transaction ID from stdin.
-// It strips all whitespace and control characters, returning only printable ASCII characters.
-// This allows for flexible input formatting (newlines, spaces, etc.).
-func readTxidFromStdin() string {
-	scanner := bufio.NewScanner(os.Stdin)
-	var txidBuilder strings.Builder
-
-	// Read all text via stdin into a single string with no spaces or control characters
-	for scanner.Scan() {
-		line := scanner.Text()
-		// Remove all whitespace and control characters
-		cleaned := strings.Map(func(r rune) rune {
-			if r > 32 && r < 127 {
-				return r
-			}
-			return -1
-		}, line)
-		txidBuilder.WriteString(cleaned)
+// getTransactionID retrieves the transaction ID from argument, flag, or stdin.
+func getTransactionID(cmd *cobra.Command, args []string) (string, error) {
+	// Get txid from command line argument if provided
+	if len(args) > 0 {
+		return args[0], nil
 	}
 
-	if err := scanner.Err(); err != nil {
-		log.Fatalf("Error reading input: %v", err)
+	// Use flag value if provided
+	if txid != "" {
+		return txid, nil
 	}
 
-	return txidBuilder.String()
+	// Check if stdin has data
+	stat, _ := os.Stdin.Stat()
+	if (stat.Mode() & os.ModeCharDevice) == 0 {
+		// Data is being piped to stdin
+		return cli.ReadHexFromReader(os.Stdin)
+	}
+
+	return "", nil
 }
 
 // getRawFromWhatsOnChain fetches raw transaction data from the WhatsOnChain API.
@@ -110,7 +90,7 @@ func readTxidFromStdin() string {
 //
 // Logs the chain and network information to stderr.
 // Outputs the raw transaction hex to stdout for easy piping to other tools.
-func getRawFromWhatsOnChain(txid string) {
+func getRawFromWhatsOnChain(txid string) error {
 	ctx := context.Background()
 
 	var client whatsonchain.ClientInterface
@@ -124,7 +104,7 @@ func getRawFromWhatsOnChain(txid string) {
 	}
 
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("creating WhatsOnChain client: %w", err)
 	}
 
 	log.Printf("Chain: %s, Network: %s\n", client.Chain(), client.Network())
@@ -132,11 +112,12 @@ func getRawFromWhatsOnChain(txid string) {
 	// Get raw transaction data
 	rawTx, err := client.GetRawTransactionData(ctx, txid)
 	if err != nil {
-		log.Fatalf("Error getting raw transaction: %v", err)
+		return fmt.Errorf("getting raw transaction: %w", err)
 	}
 
 	// Print the raw transaction hex
 	fmt.Println(rawTx)
+	return nil
 }
 
 // init initializes the cobra command flags.
@@ -153,11 +134,4 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-}
-
-// isHex validates that a string contains only hexadecimal characters (0-9, a-f, A-F).
-// Returns true if the string is valid hex, false otherwise.
-func isHex(hex string) bool {
-	match, _ := regexp.MatchString("^[0-9a-fA-F]+$", hex)
-	return match
 }

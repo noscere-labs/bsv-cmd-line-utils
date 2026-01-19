@@ -18,55 +18,22 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
-	"log"
 	"os"
-	"path/filepath"
-	"regexp"
-	"strings"
 	"time"
 
 	"github.com/mrz1836/go-template/internal/arc"
+	"github.com/mrz1836/go-template/internal/cli"
+	"github.com/mrz1836/go-template/internal/config"
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 )
 
-// ARCConfig holds the configuration for an ARC endpoint (mainnet or testnet).
-type ARCConfig struct {
-	URL     string `yaml:"url"`      // ARC endpoint URL (e.g., "https://api.taal.com")
-	APIKey  string `yaml:"api_key"`  // API key for authentication
-	Timeout string `yaml:"timeout"`  // HTTP timeout duration (e.g., "30s")
-}
-
-// PollingConfig defines parameters for transaction status polling when monitoring is enabled.
-type PollingConfig struct {
-	Interval      string  `yaml:"interval"`       // Time between status checks (e.g., "3s")
-	MaxRetries    int     `yaml:"max_retries"`    // Maximum number of retry attempts
-	BackoffFactor float64 `yaml:"backoff_factor"` // Multiplier for exponential backoff
-}
-
-// TargetsConfig specifies target states for transaction monitoring.
-type TargetsConfig struct {
-	Default       string `yaml:"default"`          // Default target status to wait for
-	WaitForMining bool   `yaml:"wait_for_mining"`  // Whether to wait for MINED status
-}
-
-// Config is the root configuration structure loaded from config.yaml.
-type Config struct {
-	ARCMainnet ARCConfig     `yaml:"arc-mainnet"` // Mainnet ARC configuration
-	ARCTestnet ARCConfig     `yaml:"arc-testnet"` // Testnet ARC configuration
-	Polling    PollingConfig `yaml:"polling"`     // Polling parameters for monitoring
-	Targets    TargetsConfig `yaml:"targets"`     // Target status configuration
-}
-
-// Command-line flags and global configuration
+// Command-line flags
 var (
 	testnet  bool   // Use testnet instead of mainnet
 	raw      string // Raw transaction hex provided via flag
 	monitor  bool   // Enable transaction status monitoring
 	pollRate int    // Polling interval in seconds for monitoring
-	config   Config // Loaded configuration from config.yaml
 )
 
 // rootCmd is the main cobra command for the broadcast tool.
@@ -74,135 +41,79 @@ var rootCmd = &cobra.Command{
 	Use:   "broadcast",
 	Short: "A simple transaction broadcaster",
 	Long:  "A command line tool that broadcasts bitcoin transactions from stdin",
-	Run: func(cmd *cobra.Command, args []string) {
-		processInput()
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return run()
 	},
 }
 
-// loadConfig reads and parses the config.yaml file.
-// It first checks the executable directory, then falls back to the current working directory.
-// Returns an error if the config file cannot be found or parsed.
-func loadConfig() error {
-	// Get the executable directory
-	exePath, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("failed to get executable path: %w", err)
-	}
-	exeDir := filepath.Dir(exePath)
-
-	// Try config.yaml in the executable directory first
-	configPath := filepath.Join(exeDir, "config.yaml")
-
-	// If not found, try the current working directory
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		configPath = "config.yaml"
-	}
-
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return fmt.Errorf("failed to read config file: %w", err)
-	}
-
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		return fmt.Errorf("failed to parse config file: %w", err)
-	}
-
-	return nil
-}
-
-// processInput handles the main execution flow:
+// run handles the main execution flow:
 // 1. Loads configuration from config.yaml
 // 2. Reads transaction hex from flag or stdin
 // 3. Validates the hex string
 // 4. Broadcasts the transaction to ARC
-func processInput() {
+func run() error {
 	// Load configuration from config.yaml
-	if err := loadConfig(); err != nil {
-		log.Fatalf("Error loading configuration: %v", err)
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("loading configuration: %w", err)
 	}
 
-	var txString string
+	// Validate config
+	if err := cfg.Validate(testnet); err != nil {
+		return err
+	}
 
 	// Get transaction from raw flag or stdin
-	if raw != "" {
-		txString = raw
-	} else {
-		txString = readTxFromStdin()
+	txString, err := getTransactionHex()
+	if err != nil {
+		return err
 	}
 
 	if txString == "" {
-		log.Fatal("Error: no transaction provided")
+		return fmt.Errorf("no transaction provided")
 	}
 
 	// Check the string to ensure it is a hex string
-	if !isHex(txString) {
-		log.Fatalf("Error: input is not a valid hex string")
+	if !cli.IsValidHex(txString) {
+		return fmt.Errorf("input is not a valid hex string")
 	}
 
 	fmt.Printf("Transaction hex: %s\n", txString)
 
 	// Broadcast transaction using ARC
-	broadcastTransaction(txString)
+	return broadcastTransaction(cfg, txString)
 }
 
-// readTxFromStdin reads transaction hex from stdin.
-// It strips all whitespace and control characters, returning only printable ASCII characters.
-// This allows for flexible input formatting (newlines, spaces, etc.).
-func readTxFromStdin() string {
-	scanner := bufio.NewScanner(os.Stdin)
-	var txHex strings.Builder
-
-	// Read all text via stdin into a single string with no spaces or control characters
-	for scanner.Scan() {
-		line := scanner.Text()
-		// Remove all whitespace and control characters
-		cleaned := strings.Map(func(r rune) rune {
-			if r > 32 && r < 127 {
-				return r
-			}
-			return -1
-		}, line)
-		txHex.WriteString(cleaned)
+// getTransactionHex reads transaction hex from flag or stdin.
+func getTransactionHex() (string, error) {
+	if raw != "" {
+		return raw, nil
 	}
-
-	if err := scanner.Err(); err != nil {
-		log.Fatalf("Error reading input: %v", err)
-	}
-
-	return txHex.String()
+	return cli.ReadHexFromReader(os.Stdin)
 }
 
 // broadcastTransaction sends a raw transaction to the ARC network.
 // It selects the appropriate endpoint (mainnet/testnet) based on the --testnet flag,
 // creates an ARC client, broadcasts the transaction, and displays the result.
 // If --monitor flag is set, it will continuously poll the transaction status.
-func broadcastTransaction(rawTx string) {
-	// Use config based on testnet flag
-	var url, key string
+func broadcastTransaction(cfg *config.Config, rawTx string) error {
+	arcConfig := cfg.GetARCConfig(testnet)
+
 	if testnet {
-		url = config.ARCTestnet.URL
-		key = config.ARCTestnet.APIKey
 		fmt.Println("Using testnet configuration")
 	} else {
-		url = config.ARCMainnet.URL
-		key = config.ARCMainnet.APIKey
 		fmt.Println("Using mainnet configuration")
 	}
 
-	// Validate ARC URL is available
-	if url == "" {
-		log.Fatal("Error: ARC URL is required in config.yaml")
-	}
-
 	// Create ARC client
-	client := arc.NewARCClient(url, key)
+	client := arc.NewARCClient(arcConfig.URL, arcConfig.APIKey)
 
 	fmt.Println("Broadcasting transaction to ARC...")
 
 	// Broadcast the transaction
 	resp, err := client.BroadcastTransaction(rawTx)
 	if err != nil {
-		log.Fatalf("Error broadcasting transaction: %v", err)
+		return fmt.Errorf("broadcasting transaction: %w", err)
 	}
 
 	fmt.Printf("✓ Transaction broadcast successful!\n")
@@ -217,6 +128,8 @@ func broadcastTransaction(rawTx string) {
 	if monitor {
 		monitorTransaction(client, resp.TxID)
 	}
+
+	return nil
 }
 
 // monitorTransaction continuously polls the transaction status until it reaches a final state.
@@ -234,7 +147,8 @@ func monitorTransaction(client *arc.ARCClient, txid string) {
 	for {
 		status, err := client.GetTransactionStatus(txid)
 		if err != nil {
-			log.Printf("Error getting transaction status: %v", err)
+			fmt.Fprintf(os.Stderr, "Error getting transaction status: %v\n", err)
+			<-ticker.C
 			continue
 		}
 
@@ -272,11 +186,4 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-}
-
-// isHex validates that a string contains only hexadecimal characters (0-9, a-f, A-F).
-// Returns true if the string is valid hex, false otherwise.
-func isHex(hex string) bool {
-	match, _ := regexp.MatchString("^[0-9a-fA-F]+$", hex)
-	return match
 }
