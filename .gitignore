@@ -5,6 +5,14 @@
 *.so
 *.dylib
 
+# Compiled CLI tools (ignore executables in root and cmd directories)
+/broadcast
+/carve
+/prettytx
+/txstatus
+/getraw
+cmd/*/[a-z]*[!.go]
+
 # Test binary, build with `go test -c`
 *.test
 

@@ -71,6 +71,7 @@
     "go.toolsManagement.autoUpdate": true,
     "go.useLanguageServer": true,
     "gopls": {
+
         "build.directoryFilters": [
             "-node_modules",
             "-vendor",
@@ -94,6 +95,6 @@
         },
         "ui.diagnostic.staticcheck": true,
         "ui.navigation.importShortcut": "Definition",
-        "ui.semanticTokens": true
+        "ui.semanticTokens": false
     }
 }

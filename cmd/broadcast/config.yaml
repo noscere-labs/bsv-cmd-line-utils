@@ -1,0 +1,22 @@
+# ARC endpoint configuration
+arc-mainnet:
+  url: "https://api.taal.com"
+  api_key: "mainnet_b0288f622b22ad95fecbb14aef61cfaf" # Set your TAAL API key here
+  timeout: "30s"
+
+# ARC endpoint configuration
+arc-testnet:
+  url: "https://arc-test.taal.com"
+  api_key: "testnet_bf9c1bec79172eecbc79f3221f16e67b" # Set your TAAL API key here
+  timeout: "30s"
+
+# Polling configuration
+polling:
+  interval: "3s"
+  max_retries: 10
+  backoff_factor: 1.5
+
+# Target statuses (when to stop polling)
+targets:
+  default: "SEEN_BY_NETWORK"
+  wait_for_mining: false
