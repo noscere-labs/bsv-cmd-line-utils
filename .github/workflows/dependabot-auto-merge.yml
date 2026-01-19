@@ -62,7 +62,7 @@ jobs:
       # Check out code to access env file
       # --------------------------------------------------------------------
       - name: 📥 Checkout code (sparse)
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           sparse-checkout: |
             .github/.env.base
@@ -157,7 +157,7 @@ jobs:
       # --------------------------------------------------------------------
       - name: 📊 Fetch Dependabot metadata
         id: metadata
-        uses: dependabot/fetch-metadata@08eff52bf64351f401fb50d4972fa95b9f2c2d1b # v2.4.0
+        uses: dependabot/fetch-metadata@21025c705c08248db411dc16f3619e6b5f9ea21a # v2.5.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
