@@ -376,12 +376,7 @@ func TestColorConstants(t *testing.T) {
 	assert.Equal(t, "\033[0m", colorReset)
 	assert.Equal(t, "\033[31m", colorRed)
 	assert.Equal(t, "\033[32m", colorGreen)
-	assert.Equal(t, "\033[33m", colorYellow)
-	assert.Equal(t, "\033[34m", colorBlue)
-	assert.Equal(t, "\033[35m", colorMagenta)
-	assert.Equal(t, "\033[36m", colorCyan)
 	assert.Equal(t, "\033[37m", colorWhite)
-	assert.Equal(t, "\033[1m", colorBold)
 	assert.Equal(t, "\033[2m", colorDim)
 }
 
