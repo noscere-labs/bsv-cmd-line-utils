@@ -31,29 +31,26 @@ import (
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction"
-	"github.com/mrz1836/go-template/internal/cli"
 	"github.com/spf13/cobra"
 	"golang.design/x/clipboard"
+
+	"github.com/mrz1836/go-template/internal/cli"
 )
 
 // ANSI color codes for terminal output styling
 const (
-	colorReset   = "\033[0m"  // Reset to default
-	colorRed     = "\033[31m" // Red text
-	colorGreen   = "\033[32m" // Green text
-	colorYellow  = "\033[33m" // Yellow text
-	colorBlue    = "\033[34m" // Blue text
-	colorMagenta = "\033[35m" // Magenta text
-	colorCyan    = "\033[36m" // Cyan text
-	colorWhite   = "\033[37m" // White text
-	colorBold    = "\033[1m"  // Bold text
-	colorDim     = "\033[2m"  // Dimmed text
+	colorReset = "\033[0m"  // Reset to default
+	colorRed   = "\033[31m" // Red text (errors)
+	colorGreen = "\033[32m" // Green text (values, addresses)
+	colorWhite = "\033[37m" // White text (headers, structure)
+	colorDim   = "\033[2m"  // Dimmed text (labels, annotations)
 )
 
 // Command-line flags
 var (
 	raw     string // Raw transaction hex provided via flag
 	noColor bool   // Disable colored output
+	compact bool   // Enable compact output mode
 )
 
 // rootCmd is the main cobra command for the prettytx tool.
@@ -148,7 +145,7 @@ func parseTransaction(rawTx string) error {
 	}
 
 	// Display transaction breakdown
-	printHeader()
+	printHeader(tx.TxID().String())
 	printVersion(tx)
 	printInputs(tx)
 	printOutputs(tx)
@@ -159,81 +156,73 @@ func parseTransaction(rawTx string) error {
 }
 
 // printHeader prints the transaction breakdown header.
-func printHeader() {
-	fmt.Println(c(colorBold+colorCyan, "================================================================================"))
-	fmt.Println(c(colorBold+colorCyan, "TRANSACTION BREAKDOWN"))
-	fmt.Println(c(colorBold+colorCyan, "================================================================================"))
-	fmt.Println()
+func printHeader(txid string) {
+	fmt.Printf("%s %s\n",
+		c(colorDim, "TX ID:"),
+		c(colorGreen, txid))
+	fmt.Println(c(colorWhite, "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"))
 }
 
 // printVersion prints the transaction version.
 func printVersion(tx *transaction.Transaction) {
-	fmt.Printf("%s %s %s\n",
-		c(colorYellow, "Version:"),
-		c(colorWhite, fmt.Sprintf("%d", tx.Version)),
+	fmt.Printf("%s %d %s\n",
+		c(colorDim, "Version:"),
+		tx.Version,
 		c(colorDim, fmt.Sprintf("(0x%08x)", tx.Version)))
-	fmt.Println()
 }
 
 // printInputs prints the transaction inputs section.
 func printInputs(tx *transaction.Transaction) {
 	inputCount := len(tx.Inputs)
-	fmt.Printf("%s %s\n", c(colorYellow, "In-counter:"), c(colorWhite, fmt.Sprintf("%d", inputCount)))
-	fmt.Println()
+	fmt.Printf("%s %d\n", c(colorDim, "Inputs:"), inputCount)
 
 	if inputCount == 0 {
 		return
 	}
 
-	fmt.Println(c(colorBold+colorGreen, "INPUTS:"))
-	fmt.Println(c(colorGreen, "--------------------------------------------------------------------------------"))
-
 	for i, input := range tx.Inputs {
 		printInput(i, input)
 	}
-	fmt.Println()
 }
 
 // printInput prints a single transaction input.
 func printInput(index int, input *transaction.TransactionInput) {
-	fmt.Printf("\n%s\n", c(colorBold+colorGreen, fmt.Sprintf("Input #%d:", index)))
-	fmt.Println()
+	fmt.Printf("\n%s\n", c(colorWhite, fmt.Sprintf("INPUT #%d", index)))
 
-	// Previous transaction ID
+	// Previous transaction ID and output index on same line
 	if input.SourceTXID != nil {
-		fmt.Printf("  %s %s\n",
-			c(colorYellow, "Prev TX ID:"),
-			c(colorCyan, input.SourceTXID.String()))
+		fmt.Printf("  %s %s:%d\n",
+			c(colorDim, "Prev:"),
+			c(colorGreen, input.SourceTXID.String()),
+			input.SourceTxOutIndex)
 	} else {
 		fmt.Printf("  %s %s\n",
-			c(colorYellow, "Prev TX ID:"),
+			c(colorDim, "Prev:"),
 			c(colorRed, "(null)"))
 	}
-
-	// Previous output index
-	fmt.Printf("  %s %s\n",
-		c(colorYellow, "Prev Vout:"),
-		c(colorWhite, fmt.Sprintf("%d", input.SourceTxOutIndex)))
 
 	// Script
 	printUnlockingScript(input.UnlockingScript)
 
 	// Sequence number
-	fmt.Printf("  %s %s %s\n",
-		c(colorYellow, "Sequence:"),
-		c(colorWhite, fmt.Sprintf("%d", input.SequenceNumber)),
+	fmt.Printf("  %s %d %s\n",
+		c(colorDim, "Sequence:"),
+		input.SequenceNumber,
 		c(colorDim, fmt.Sprintf("(0x%08x)", input.SequenceNumber)))
+}
+
+// truncateHex truncates a hex string if compact mode is enabled and it exceeds maxLen.
+func truncateHex(hexStr string, maxLen int) string {
+	if !compact || len(hexStr) <= maxLen {
+		return hexStr
+	}
+	return hexStr[:maxLen] + "..."
 }
 
 // printUnlockingScript prints the unlocking script details for an input.
 func printUnlockingScript(unlockingScript *script.Script) {
 	if unlockingScript == nil {
-		fmt.Printf("  %s %s\n",
-			c(colorYellow, "Script Length:"),
-			c(colorWhite, "0 bytes"))
-		fmt.Printf("  %s %s\n",
-			c(colorYellow, "Script (hex):"),
-			c(colorDim, "(empty)"))
+		fmt.Printf("  %s %s\n", c(colorDim, "Script:"), c(colorDim, "(empty)"))
 		return
 	}
 
@@ -241,52 +230,42 @@ func printUnlockingScript(unlockingScript *script.Script) {
 	scriptHex := scriptBytes.String()
 	scriptLen := len(scriptBytes)
 
-	fmt.Printf("  %s %s\n",
-		c(colorYellow, "Script Length:"),
-		c(colorWhite, fmt.Sprintf("%d bytes", scriptLen)))
-	fmt.Printf("  %s %s\n",
-		c(colorYellow, "Script (hex):"),
-		c(colorMagenta, scriptHex))
+	fmt.Printf("  %s %s %s\n",
+		c(colorDim, "Script:"),
+		c(colorDim, truncateHex(scriptHex, 64)),
+		c(colorDim, fmt.Sprintf("(%d bytes)", scriptLen)))
 
 	// Try to extract address from P2PKH unlocking script
 	addr := extractAddressFromUnlockingScript(unlockingScript, true)
 	if addr != "" {
-		fmt.Printf("  %s %s\n",
-			c(colorYellow, "Address:"),
-			c(colorCyan, addr))
+		fmt.Printf("  %s %s\n", c(colorDim, "Address:"), c(colorGreen, addr))
 	}
 }
 
 // printOutputs prints the transaction outputs section.
 func printOutputs(tx *transaction.Transaction) {
 	outputCount := len(tx.Outputs)
-	fmt.Printf("%s %s\n", c(colorYellow, "Out-counter:"), c(colorWhite, fmt.Sprintf("%d", outputCount)))
-	fmt.Println()
+	fmt.Printf("%s %d\n", c(colorDim, "Outputs:"), outputCount)
 
 	if outputCount == 0 {
 		return
 	}
 
-	fmt.Println(c(colorBold+colorBlue, "OUTPUTS:"))
-	fmt.Println(c(colorBlue, "--------------------------------------------------------------------------------"))
-
 	for i, output := range tx.Outputs {
 		printOutput(i, output)
 	}
-	fmt.Println()
 }
 
 // printOutput prints a single transaction output.
 func printOutput(index int, output *transaction.TransactionOutput) {
-	fmt.Printf("\n%s\n", c(colorBold+colorBlue, fmt.Sprintf("Output #%d:", index)))
-	fmt.Println()
+	fmt.Printf("\n%s\n", c(colorWhite, fmt.Sprintf("OUTPUT #%d", index)))
 
 	// Value in satoshis
 	satoshis := output.Satoshis
 	btc := float64(satoshis) / 100000000.0
 	fmt.Printf("  %s %s %s\n",
-		c(colorYellow, "Value:"),
-		c(colorGreen, fmt.Sprintf("%d satoshis", satoshis)),
+		c(colorDim, "Value:"),
+		c(colorGreen, fmt.Sprintf("%d sats", satoshis)),
 		c(colorDim, fmt.Sprintf("(%.8f BSV)", btc)))
 
 	// Locking script
@@ -296,12 +275,7 @@ func printOutput(index int, output *transaction.TransactionOutput) {
 // printLockingScript prints the locking script details for an output.
 func printLockingScript(lockingScript *script.Script) {
 	if lockingScript == nil {
-		fmt.Printf("  %s %s\n",
-			c(colorYellow, "Script Length:"),
-			c(colorWhite, "0 bytes"))
-		fmt.Printf("  %s %s\n",
-			c(colorYellow, "Script (hex):"),
-			c(colorDim, "(empty)"))
+		fmt.Printf("  %s %s\n", c(colorDim, "Script:"), c(colorDim, "(empty)"))
 		return
 	}
 
@@ -309,46 +283,41 @@ func printLockingScript(lockingScript *script.Script) {
 	scriptHex := scriptBytes.String()
 	scriptLen := len(scriptBytes)
 
-	fmt.Printf("  %s %s\n",
-		c(colorYellow, "Script Length:"),
-		c(colorWhite, fmt.Sprintf("%d bytes", scriptLen)))
-	fmt.Printf("  %s %s\n",
-		c(colorYellow, "Script (hex):"),
-		c(colorMagenta, scriptHex))
+	fmt.Printf("  %s %s %s\n",
+		c(colorDim, "Script:"),
+		c(colorDim, truncateHex(scriptHex, 64)),
+		c(colorDim, fmt.Sprintf("(%d bytes)", scriptLen)))
 
 	// Try to extract P2PKH address
 	addr := extractP2PKHAddress(lockingScript, true)
 	if addr != "" {
-		fmt.Printf("  %s %s\n",
-			c(colorYellow, "Address:"),
-			c(colorCyan, addr))
+		fmt.Printf("  %s %s\n", c(colorDim, "Address:"), c(colorGreen, addr))
 	}
 }
 
 // printLocktime prints the transaction locktime.
 func printLocktime(tx *transaction.Transaction) {
-	fmt.Printf("%s %s %s\n",
-		c(colorYellow, "nLockTime:"),
-		c(colorWhite, fmt.Sprintf("%d", tx.LockTime)),
-		c(colorDim, fmt.Sprintf("(0x%08x)", tx.LockTime)))
-
+	lockInfo := ""
 	if tx.LockTime == 0 {
-		fmt.Printf("           %s\n", c(colorDim, "(Not locked)"))
+		lockInfo = "(Not locked)"
 	} else if tx.LockTime < 500000000 {
-		fmt.Printf("           %s\n", c(colorDim, fmt.Sprintf("(Locked until block height %d)", tx.LockTime)))
+		lockInfo = fmt.Sprintf("(Block %d)", tx.LockTime)
 	} else {
-		fmt.Printf("           %s\n", c(colorDim, fmt.Sprintf("(Locked until Unix timestamp %d)", tx.LockTime)))
+		lockInfo = fmt.Sprintf("(Timestamp %d)", tx.LockTime)
 	}
-	fmt.Println()
+
+	fmt.Printf("\n%s %d %s\n",
+		c(colorDim, "nLockTime:"),
+		tx.LockTime,
+		c(colorDim, lockInfo))
 }
 
 // printFooter prints the transaction footer with TXID.
 func printFooter(tx *transaction.Transaction) {
-	fmt.Println(c(colorBold+colorCyan, "================================================================================"))
+	fmt.Println(c(colorWhite, "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"))
 	fmt.Printf("%s %s\n",
-		c(colorBold+colorYellow, "Transaction ID:"),
-		c(colorBold+colorGreen, tx.TxID().String()))
-	fmt.Println(c(colorBold+colorCyan, "================================================================================"))
+		c(colorDim, "TX ID:"),
+		c(colorGreen, tx.TxID().String()))
 }
 
 // isP2PKH checks if a locking script is a standard P2PKH (Pay-to-PubKey-Hash) script.
@@ -486,6 +455,7 @@ func extractPublicKeyFromScript(bytes []byte) []byte {
 func init() {
 	rootCmd.Flags().StringVarP(&raw, "raw", "r", "", "Raw transaction hex to parse")
 	rootCmd.Flags().BoolVar(&noColor, "no-color", false, "Disable colored output")
+	rootCmd.Flags().BoolVarP(&compact, "compact", "c", false, "Enable compact output with truncated scripts")
 }
 
 // main is the entry point for the prettytx command.
