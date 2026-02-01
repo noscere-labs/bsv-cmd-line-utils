@@ -12,6 +12,7 @@
 /txstatus
 /getraw
 /pick
+/wifinfo
 cmd/*/[a-z]*[!.go]
 
 # Test binary, build with `go test -c`
