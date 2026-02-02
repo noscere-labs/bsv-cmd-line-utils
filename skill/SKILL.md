@@ -167,6 +167,30 @@ carve -w $TESTNET_WIF -a $TESTNET_ADDR -s 1000 -t | broadcast -t -m
 wifinfo $WIF -j | jq '.mainnet.address.compressed'   # Extract mainnet address
 ```
 
+## Recipes
+
+### Split to WIFs
+
+Generate N fresh key pairs, fund each from a source WIF, and display the results. Ask the user for:
+1. **How many WIFs** to generate
+2. **How many satoshis** each should receive
+3. **Which network** (mainnet or testnet) — default testnet
+4. **Source WIF** to fund from
+
+Then execute this workflow:
+
+1. **Generate keys**: `keygen -t -c <N> -j` (drop `-t` for mainnet)
+2. **For each generated key**, carve and verify before broadcasting:
+   ```bash
+   carve -w <SOURCE_WIF> -a <ADDRESS_N> -s <SATS> -t > /tmp/tx_N.hex
+   cat /tmp/tx_N.hex | prettytx --no-color    # verify outputs
+   cat /tmp/tx_N.hex | broadcast -t            # broadcast after verification
+   ```
+3. **Wait ~5s between broadcasts** — WoC needs time to see spent UTXOs, otherwise carve picks the same UTXO and causes double-spend rejections
+4. **Display summary table** of all generated keys with WIF, address, pubkey, funding txid, and balance
+
+**Important**: Always pipe through `prettytx` first to verify the destination address and amount before broadcasting. Never broadcast blind.
+
 ## Fee Estimation
 
 Tx size: ~10 bytes base + 148 bytes/input + 34 bytes/output.
