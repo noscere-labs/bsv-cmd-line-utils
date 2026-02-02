@@ -1,133 +1,145 @@
-# BSV Transaction Tools - User Guide
+# BSV Transaction Tools — User Guide
 
-A comprehensive suite of command-line tools for Bitcoin SV (BSV) transaction handling, building, broadcasting, and analysis.
+Eight command-line tools for the full Bitcoin SV transaction lifecycle.
 
 ## Table of Contents
 
 - [Installation](#installation)
 - [Tools Overview](#tools-overview)
-  - [broadcast](#broadcast---transaction-broadcaster)
-  - [carve](#carve---transaction-builder)
-  - [prettytx](#prettytx---transaction-parser)
-  - [getraw](#getraw---transaction-fetcher)
+  - [keygen — Key Pair Generator](#keygen---key-pair-generator)
+  - [wifinfo — WIF Key Inspector](#wifinfo---wif-key-inspector)
+  - [carve — Transaction Builder](#carve---transaction-builder)
+  - [broadcast — Transaction Broadcaster](#broadcast---transaction-broadcaster)
+  - [txstatus — Status Checker](#txstatus---status-checker)
+  - [getraw — Transaction Fetcher](#getraw---transaction-fetcher)
+  - [prettytx — Transaction Parser](#prettytx---transaction-parser)
+  - [pick — Transaction Field Extractor](#pick---transaction-field-extractor)
 - [Configuration](#configuration)
 - [Examples](#examples)
+- [Transaction Size & Fees](#transaction-size--fees)
 - [Troubleshooting](#troubleshooting)
 
 ---
 
 ## Installation
 
-Build and install all tools:
-
 ```bash
-# Install broadcast
-cd cmd/broadcast && go install && cd ../..
+cd bsv-cmd-line-utils
 
-# Install carve
-cd cmd/carve && go install && cd ../..
+# Install all tools
+go install ./cmd/...
 
-# Install prettytx
-cd cmd/prettytx && go install && cd ../..
-
-# Install getraw
-cd cmd/getraw && go install && cd ../..
+# Or install individually
+go install ./cmd/keygen
+go install ./cmd/wifinfo
+go install ./cmd/carve
+go install ./cmd/broadcast
+go install ./cmd/txstatus
+go install ./cmd/getraw
+go install ./cmd/prettytx
+go install ./cmd/pick
 ```
-
-After installation, all tools will be available globally in your terminal.
 
 ---
 
 ## Tools Overview
 
-### broadcast - Transaction Broadcaster
+### keygen — Key Pair Generator
 
-Broadcasts raw Bitcoin transactions to the BSV network using ARC (BSV Transaction Processing) endpoints.
-
-#### Features
-- Config-based mainnet/testnet endpoint management
-- Transaction status monitoring with automatic polling
-- Real-time transaction lifecycle tracking
-- YAML configuration for ARC endpoints
+Generates BSV private keys with corresponding public keys and addresses using cryptographically secure randomness.
 
 #### Usage
 
 ```bash
-# Basic broadcast from stdin
-echo "010000..." | broadcast
-
-# Broadcast using raw flag
-broadcast -r "010000..."
-
-# Broadcast to testnet
-echo "010000..." | broadcast -t
-
-# Broadcast and monitor until final state
-echo "010000..." | broadcast -m
-
-# Monitor with custom poll rate (default: 5 seconds)
-echo "010000..." | broadcast -m -p 10
+keygen                          # Single mainnet key pair
+keygen -t                       # Testnet key pair
+keygen -c 5                     # Generate 5 key pairs
+keygen -j                       # JSON output
+keygen -u                       # Uncompressed public key
+keygen -t -c 3 -j               # 3 testnet keys in JSON
 ```
 
 #### Flags
 
 | Flag | Short | Description | Default |
 |------|-------|-------------|---------|
-| `--raw` | `-r` | Raw transaction hex to broadcast | - |
-| `--monitor` | `-m` | Monitor transaction status until final state | false |
-| `--poll-rate` | `-p` | Polling rate in seconds for monitoring | 5 |
-| `--testnet` | `-t` | Use testnet configuration | false |
+| `--testnet` | `-t` | Generate testnet keys | false |
+| `--count` | `-c` | Number of key pairs (1-100) | 1 |
+| `--json` | `-j` | Output in JSON format | false |
+| `--uncompressed` | `-u` | Use uncompressed public key | false |
 
-#### Transaction Status Flow
+#### Output (JSON)
 
+```json
+{
+  "privateKey": "hex...",
+  "publicKey": "hex...",
+  "wif": "K...",
+  "address": "1...",
+  "network": "mainnet",
+  "compressed": true
+}
 ```
-RECEIVED → STORED → ANNOUNCED_TO_NETWORK → SEEN_ON_NETWORK → MINED
-```
-
-Other possible states:
-- `REJECTED` - Transaction rejected by network
-- `DOUBLE_SPEND_ATTEMPTED` - Double spend detected
-
-#### Configuration
-
-The tool reads from `config.yaml` (see [Configuration](#configuration) section).
 
 ---
 
-### carve - Transaction Builder
+### wifinfo — WIF Key Inspector
 
-Creates and signs BSV transactions from a WIF private key, with smart UTXO selection and fee estimation.
+Parses a WIF-encoded private key and displays the corresponding public keys, addresses, and WIF representations for both mainnet and testnet. Automatically detects the input network and compression format.
+
+#### Usage
+
+```bash
+wifinfo <wif>                   # Parse from argument
+wifinfo -w <wif>                # Parse from flag
+echo <wif> | wifinfo            # Parse from stdin
+wifinfo -j <wif>                # JSON output
+wifinfo --no-color <wif>        # Plain output (for scripting)
+```
+
+#### Flags
+
+| Flag | Short | Description | Default |
+|------|-------|-------------|---------|
+| `--wif` | `-w` | WIF string via flag | - |
+| `--json` | `-j` | Output in JSON format | false |
+| `--no-color` | - | Disable colored output | false |
+
+#### Output
+
+Shows for both mainnet and testnet:
+- Compressed and uncompressed public keys
+- Compressed and uncompressed addresses
+- Compressed and uncompressed WIF encodings
+- Detected input network and compression
+
+---
+
+### carve — Transaction Builder
+
+Creates and signs BSV transactions with smart UTXO selection and automatic fee estimation.
 
 #### Features
-- Smart UTXO selection with largest-first algorithm
+- Largest-first UTXO selection (minimizes inputs)
 - Automatic fee estimation with 100 satoshi minimum floor
-- Support for "send all" transactions
+- Send-all mode (sats=0 sends entire balance minus fees)
+- Split payments across multiple equal outputs
 - Mainnet/testnet support
-- Debug mode for verbose logging
-- Automatic change output handling
+- Debug mode for verbose UTXO selection logging
 - Dust limit protection
 
 #### Usage
 
 ```bash
-# Send specific amount
-carve -w <WIF> -a <destination_address> -s 1000
-
-# Send all funds (minus fees)
-carve -w <WIF> -a <destination_address>
-
-# Use testnet
-carve -w <WIF> -a <testnet_address> -s 1000 -t
-
-# Enable debug logging
-carve -w <WIF> -a <address> -s 1000 --debug
-
-# Custom fee rate (satoshis per kilobyte)
-carve -w <WIF> -a <address> -s 1000 -f 200
-
-# Custom dust limit
-carve -w <WIF> -a <address> -s 1000 -d 50
+carve -w <WIF> -a <address> -s 1000              # Send 1000 sats
+carve -w <WIF> -a <address>                       # Send all funds
+carve -w <WIF> -a <address> -s 1000 -t            # Testnet
+carve -w <WIF> -a <address> -s 1000000 -n 10      # Split into 10 equal outputs
+carve -w <WIF> -a <address> --debug               # Verbose logging
+carve -w <WIF> -a <address> -f 200                # Custom fee rate
 ```
+
+Outputs raw transaction hex to stdout.
 
 #### Flags
 
@@ -135,77 +147,138 @@ carve -w <WIF> -a <address> -s 1000 -d 50
 |------|-------|-------------|---------|
 | `--wif` | `-w` | Source WIF private key (required) | - |
 | `--address` | `-a` | Destination address (required) | - |
-| `--sats` | `-s` | Amount in satoshis to send | 0 (send all) |
+| `--sats` | `-s` | Amount in satoshis (0 = send all) | 0 |
 | `--testnet` | `-t` | Use testnet | false |
 | `--fee-per-kb` | `-f` | Fee per kilobyte in satoshis | 100 |
 | `--dust` | `-d` | Dust limit in satoshis | 1 |
+| `--num-outputs` | `-n` | Split into N equal outputs | 1 |
 | `--debug` | - | Enable debug logging | false |
 
 #### How It Works
 
-1. **Derive Address**: Extracts public key and derives P2PKH address from WIF
-2. **Fetch UTXOs**: Queries WhatsOnChain API for all unspent outputs
-3. **Select UTXOs**: Uses largest-first selection to minimize inputs while covering amount + fees
-4. **Build Transaction**: Creates inputs, outputs (payment + change), and estimates fees
-5. **Sign Transaction**: Signs all inputs with private key
-6. **Output**: Prints raw transaction hex to stdout
-
-#### Fee Calculation
-
-The tool calculates fees based on estimated transaction size:
-- Each input: ~148 bytes
-- Each output: ~34 bytes
-- Base overhead: ~10 bytes
-
-**Minimum fee floor: 100 satoshis**
-
-Formula: `fee = max(100, (tx_size * fee_per_kb) / 1000)`
-
-#### UTXO Selection
-
-The tool uses a **largest-first** algorithm:
-1. Sort UTXOs by value (descending)
-2. Add UTXOs until `total_value >= amount + estimated_fee`
-3. Return minimal set that covers the transaction
-
-This minimizes the number of inputs and reduces transaction size.
+1. Derives P2PKH address from WIF
+2. Fetches UTXOs from WhatsOnChain API
+3. Selects UTXOs using largest-first algorithm
+4. Builds transaction (payment + change outputs)
+5. Estimates fee based on transaction size
+6. Signs all inputs
+7. Outputs raw hex to stdout
 
 ---
 
-### prettytx - Transaction Parser
+### broadcast — Transaction Broadcaster
 
-Parses and displays raw Bitcoin transactions in human-readable format with colorized output.
-
-#### Features
-- Colorized transaction breakdown
-- Detailed input/output analysis
-- Script hex display
-- Satoshi to BSV conversion
-- Locktime interpretation
-- Optional color-free output for scripting
+Broadcasts raw transactions to the BSV network using ARC endpoints with optional status monitoring.
 
 #### Usage
 
 ```bash
-# Parse from stdin
-echo "010000..." | prettytx
-
-# Parse using raw flag
-prettytx -r "010000..."
-
-# Disable colors (for scripting)
-prettytx -r "010000..." --no-color
-
-# Chain with other tools
-carve -w <WIF> -a <address> -s 1000 | prettytx
-getraw <txid> | prettytx
+echo <rawtx> | broadcast                # Broadcast to mainnet
+broadcast -r <rawtx>                    # From flag
+echo <rawtx> | broadcast -t             # Testnet
+echo <rawtx> | broadcast -m             # Monitor until final state
+echo <rawtx> | broadcast -m -p 10       # Monitor, poll every 10s
 ```
 
 #### Flags
 
 | Flag | Short | Description | Default |
 |------|-------|-------------|---------|
-| `--raw` | `-r` | Raw transaction hex to parse | - |
+| `--raw` | `-r` | Raw transaction hex | - |
+| `--monitor` | `-m` | Monitor until final state | false |
+| `--poll-rate` | `-p` | Polling interval in seconds | 5 |
+| `--testnet` | `-t` | Use testnet ARC endpoint | false |
+
+#### Transaction Status Flow
+
+```
+RECEIVED → STORED → ANNOUNCED_TO_NETWORK → SEEN_ON_NETWORK → MINED
+```
+
+Other states: `REJECTED`, `DOUBLE_SPEND_ATTEMPTED`
+
+Requires `config.yaml` — see [Configuration](#configuration).
+
+---
+
+### txstatus — Status Checker
+
+Checks transaction status on the BSV network via ARC endpoints with optional polling.
+
+#### Usage
+
+```bash
+txstatus <txid>                         # Check by argument
+txstatus -i <txid>                      # Check by flag
+echo <txid> | txstatus                  # From stdin
+txstatus <txid> -t                      # Testnet
+txstatus <txid> -m                      # Monitor until final
+```
+
+#### Flags
+
+| Flag | Short | Description | Default |
+|------|-------|-------------|---------|
+| `--txid` | `-i` | Transaction ID | - |
+| `--monitor` | `-m` | Monitor until final state | false |
+| `--poll-rate` | `-p` | Polling interval in seconds | 5 |
+| `--testnet` | `-t` | Use testnet ARC endpoint | false |
+
+Requires `config.yaml` — see [Configuration](#configuration).
+
+---
+
+### getraw — Transaction Fetcher
+
+Fetches raw transaction hex from the WhatsOnChain API.
+
+#### Usage
+
+```bash
+getraw <txid>                   # Fetch by argument
+getraw -i <txid>                # Fetch by flag
+echo <txid> | getraw            # From stdin
+getraw <txid> -t                # Testnet
+getraw <txid> | prettytx        # Chain with parser
+```
+
+#### Flags
+
+| Flag | Short | Description | Default |
+|------|-------|-------------|---------|
+| `--txid` | `-i` | Transaction ID | - |
+| `--testnet` | `-t` | Use testnet | false |
+
+No configuration required. Uses WhatsOnChain public API (~3 req/sec rate limit).
+
+---
+
+### prettytx — Transaction Parser
+
+Parses raw BSV transactions and displays their components in a human-readable, colorized format.
+
+#### Features
+- Colorized terminal output
+- Input and output breakdown with script hex
+- P2PKH address extraction from scripts
+- Satoshi to BSV conversion
+- Locktime interpretation (block height vs timestamp)
+
+#### Usage
+
+```bash
+echo <rawtx> | prettytx                        # Colorized breakdown
+prettytx -r <rawtx>                            # From flag
+prettytx --no-color -r <rawtx>                 # Plain (for scripting)
+getraw <txid> | prettytx                       # Chain with fetcher
+carve -w <WIF> -a <addr> -s 1000 | prettytx   # Preview before broadcast
+```
+
+#### Flags
+
+| Flag | Short | Description | Default |
+|------|-------|-------------|---------|
+| `--raw` | `-r` | Raw transaction hex | - |
 | `--no-color` | - | Disable colored output | false |
 
 #### Output Format
@@ -216,12 +289,10 @@ TRANSACTION BREAKDOWN
 ================================================================================
 
 Version: 1 (0x00000001)
-
-In-counter: 2
+In-counter: 1
 
 INPUTS:
 --------------------------------------------------------------------------------
-
 Input #0:
   Prev TX ID: abc123...
   Prev Vout: 0
@@ -233,7 +304,6 @@ Out-counter: 2
 
 OUTPUTS:
 --------------------------------------------------------------------------------
-
 Output #0:
   Value: 1000 satoshis (0.00001000 BSV)
   Script Length: 25 bytes
@@ -247,85 +317,95 @@ Transaction ID: def456...
 ================================================================================
 ```
 
-#### Color Scheme
-
-- **Headers**: Cyan + Bold
-- **Labels**: Yellow
-- **Section Headers**: Green/Blue (inputs/outputs)
-- **Scripts**: Magenta
-- **Values**: White/Green
-- **Annotations**: Dim
-
 ---
 
-### getraw - Transaction Fetcher
+### pick — Transaction Field Extractor
 
-Fetches raw transaction data from the WhatsOnChain API.
-
-#### Features
-- Mainnet/testnet support
-- Accepts txid via argument or stdin
-- Integration with WhatsOnChain API
+Extracts specific parts from raw BSV transactions and outputs them as hex strings, one per line. Designed for pipeline integration.
 
 #### Usage
 
 ```bash
-# Fetch by txid argument
-getraw <txid>
+# Transaction-level fields
+pick <rawtx> --txid                              # Transaction ID
+pick <rawtx> --version                           # Version (4-byte LE)
+pick <rawtx> --locktime                          # Locktime (4-byte LE)
 
-# Fetch from stdin
-echo <txid> | getraw
+# Output selectors (repeatable)
+pick <rawtx> --output 0                          # First output (serialized)
+pick <rawtx> --output-script 0                   # Locking script
+pick <rawtx> --output-value 0                    # Value (8-byte LE)
 
-# Fetch testnet transaction
-getraw <txid> -t
+# Input selectors (repeatable)
+pick <rawtx> --input 0                           # First input (serialized)
+pick <rawtx> --input-script 0                    # Unlocking script
+pick <rawtx> --input-prevtxid 0                  # Source txid
+pick <rawtx> --input-prevout 0                   # Source output index
+pick <rawtx> --input-sequence 0                  # Sequence number
 
-# Chain with prettytx
-getraw <txid> | prettytx
+# Multiple selections
+pick <rawtx> --txid --output-value 0 --output-value 1
+
+# Pipeline
+echo <rawtx> | pick --txid
+getraw <txid> | pick --output-script 0
 ```
+
+Accepts raw hex from argument, `-r` flag, stdin, `file://` path, or HTTP URL.
 
 #### Flags
 
-| Flag | Short | Description | Default |
-|------|-------|-------------|---------|
-| `--txid` | `-i` | Transaction ID to retrieve | - |
-| `--testnet` | `-t` | Use testnet instead of mainnet | false |
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--raw` | `-r` | Raw transaction hex |
+| `--output` | `-o` | Complete serialized output (repeatable) |
+| `--output-script` | - | Output locking script (repeatable) |
+| `--output-value` | - | Output value in LE hex (repeatable) |
+| `--input` | `-i` | Complete serialized input (repeatable) |
+| `--input-script` | - | Input unlocking script (repeatable) |
+| `--input-prevtxid` | - | Input source txid (repeatable) |
+| `--input-prevout` | - | Input source output index (repeatable) |
+| `--input-sequence` | - | Input sequence number (repeatable) |
+| `--version` | `-v` | Transaction version |
+| `--locktime` | `-l` | Transaction locktime |
+| `--txid` | - | Transaction ID |
 
 ---
 
 ## Configuration
 
-### broadcast Configuration
+### ARC Configuration (broadcast, txstatus)
 
-Create `config.yaml` in the same directory as the `broadcast` executable:
+Create `config.yaml` in the executable directory or current working directory:
 
 ```yaml
-# Mainnet ARC endpoint
 arc-mainnet:
   url: "https://api.taal.com"
-  api_key: "mainnet_your_api_key_here"
+  api_key: "your_mainnet_key"
   timeout: "30s"
 
-# Testnet ARC endpoint
 arc-testnet:
   url: "https://arc-test.taal.com"
-  api_key: "testnet_your_api_key_here"
+  api_key: "your_testnet_key"
   timeout: "30s"
 
-# Polling configuration for monitoring
 polling:
   interval: "3s"
   max_retries: 10
   backoff_factor: 1.5
 
-# Target statuses
 targets:
   default: "SEEN_BY_NETWORK"
   wait_for_mining: false
 ```
 
-**Configuration Location**:
-1. First checks executable directory
-2. Falls back to current working directory
+### WhatsOnChain (carve, getraw)
+
+No configuration needed. Uses public API endpoints:
+- Mainnet: `https://api.whatsonchain.com/v1/bsv/main/`
+- Testnet: `https://api.whatsonchain.com/v1/bsv/test/`
+
+Rate limit: ~3 requests/second.
 
 ---
 
@@ -334,249 +414,156 @@ targets:
 ### Complete Transaction Workflow
 
 ```bash
-# 1. Create a transaction
-carve -w cR3cH1QP4e4njLNK6vaawMYPAn9bQ4YJRotkzPEVTwYsKeFfX7mT \
-      -a 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa \
-      -s 1000 > tx.hex
+# 1. Generate a key
+keygen -t -j > key.json
 
-# 2. View the transaction
+# 2. Fund the address (faucet or transfer)
+
+# 3. Create a transaction
+carve -w $(jq -r .wif key.json) -a <dest> -s 1000 -t > tx.hex
+
+# 4. Preview
 cat tx.hex | prettytx
 
-# 3. Broadcast to network
-cat tx.hex | broadcast -m
+# 5. Broadcast with monitoring
+cat tx.hex | broadcast -t -m
 
-# 4. Check transaction later
-getraw <txid> | prettytx
+# 6. Check later
+txstatus <txid> -t
 ```
 
-### Pipeline Example
+### Pipeline Composition
 
 ```bash
 # Create, view, and broadcast in one command
-carve -w <WIF> -a <address> -s 5000 | tee >(prettytx) | broadcast -m
+carve -w <WIF> -a <addr> -s 5000 | tee >(prettytx) | broadcast -m
+
+# Extract locking script from first output of a known tx
+getraw <txid> | pick --output-script 0
+
+# Get txid and all output values
+getraw <txid> | pick --txid --output-value 0 --output-value 1
 ```
 
-### Debug Transaction Creation
+### Key Inspection
 
 ```bash
-# See detailed UTXO selection and fee calculation
-carve -w <WIF> -a <address> -s 1000 --debug
-```
+# Get mainnet address from a testnet WIF
+wifinfo -j <testnet_wif> | jq '.mainnet.address.compressed'
 
-Output:
-```
-2024/01/15 10:30:00 Testnet: false
-2024/01/15 10:30:00 Source address: 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa
-2024/01/15 10:30:00 Fetching UTXOs from WhatsOnChain (main network)...
-2024/01/15 10:30:00   UTXO 1 (confirmed): abc123...:0 = 5000 satoshis
-2024/01/15 10:30:00   UTXO 2 (confirmed): def456...:1 = 3000 satoshis
-2024/01/15 10:30:00 Found 2 UTXO(s)
-2024/01/15 10:30:00 Selected 1 UTXO(s) totaling 5000 satoshis (target: 1000 + fee: ~100)
-2024/01/15 10:30:00 Total input: 5000 satoshis
-2024/01/15 10:30:00 Output to 1B2zP...: 1000 satoshis
-2024/01/15 10:30:00 Estimated size: 226 bytes, Fee: 100 satoshis
-2024/01/15 10:30:00 Change to 1A1zP...: 3900 satoshis
-2024/01/15 10:30:00 Transaction ID: xyz789...
-010000...
-```
-
-### Testing with Testnet
-
-```bash
-# Get testnet coins from a faucet, then:
-carve -w <testnet_WIF> \
-      -a mkHS9ne12qx9pS9VojpwU5xtRd4T7X7ZUt \
-      -s 1000 \
-      -t | broadcast -t -m
-```
-
-### Send All Funds
-
-```bash
-# Send entire balance minus fees
-carve -w <WIF> -a <address> | broadcast
-```
-
----
-
-## Troubleshooting
-
-### Common Issues
-
-#### "No UTXOs found for address"
-
-**Cause**: The source address has no unspent outputs.
-
-**Solution**:
-- Verify address has funds on WhatsOnChain
-- Check you're using correct network (mainnet vs testnet)
-
-#### "Insufficient funds"
-
-**Cause**: Not enough satoshis to cover amount + fees.
-
-**Solution**:
-```bash
-# Use --debug to see available funds
-carve -w <WIF> -a <address> -s 1000 --debug
-```
-
-Then adjust the amount or fee rate.
-
-#### "Transaction rejected by network"
-
-**Cause**: Various reasons (double spend, invalid script, etc.)
-
-**Solution**:
-- Check transaction with `prettytx` for issues
-- Verify UTXOs haven't been spent
-- Ensure fee is sufficient
-
-#### "ARC error: unauthorized"
-
-**Cause**: Invalid or missing API key in `config.yaml`
-
-**Solution**:
-- Verify API key in `config.yaml`
-- Ensure config file is in correct location
-- Check you're using the right network (mainnet/testnet)
-
-### Debug Tips
-
-1. **Enable debug logging**: Use `--debug` flag with carve
-2. **Inspect transactions**: Always pipe through `prettytx` to verify
-3. **Monitor broadcasts**: Use `-m` flag to watch transaction progression
-4. **Check fees**: Use `--debug` to see fee calculations
-5. **Verify network**: Double-check mainnet vs testnet flags
-
-### Getting Help
-
-```bash
-# View command help
-broadcast --help
-carve --help
-prettytx --help
-getraw --help
-```
-
----
-
-## Transaction Size Estimation
-
-Understanding transaction sizes helps optimize fees:
-
-| Component | Size (bytes) |
-|-----------|--------------|
-| Base overhead | ~10 |
-| Per input | ~148 |
-| Per output | ~34 |
-
-**Example**: 2 inputs, 2 outputs = 10 + (2 × 148) + (2 × 34) = **374 bytes**
-
-At 100 sat/KB fee rate: `(374 × 100) / 1000 = 37.4` → **100 sats** (minimum enforced)
-
----
-
-## Security Notes
-
-### WIF Private Keys
-
-- **Never commit WIF keys** to version control
-- **Never share WIF keys** - they control your funds
-- **Use testnet** for experimentation
-- **Store securely** using environment variables or secure vaults
-
-### Best Practices
-
-```bash
-# Use environment variable for WIF
-export MY_WIF="cR3cH1QP4e4njLNK6vaawMYPAn9bQ4YJRotkzPEVTwYsKeFfX7mT"
-carve -w "$MY_WIF" -a <address> -s 1000
-
-# Or read from secure file
-carve -w $(cat ~/.secure/wallet.wif) -a <address> -s 1000
-```
-
-### API Keys
-
-- **Protect ARC API keys** in `config.yaml`
-- **Use different keys** for mainnet and testnet
-- **Rotate keys** periodically
-- **Set appropriate permissions**: `chmod 600 config.yaml`
-
----
-
-## Advanced Usage
-
-### Custom Fee Strategies
-
-```bash
-# Low priority (100 sat/KB - default)
-carve -w <WIF> -a <address> -s 1000 -f 100
-
-# Standard priority (200 sat/KB)
-carve -w <WIF> -a <address> -s 1000 -f 200
-
-# High priority (500 sat/KB)
-carve -w <WIF> -a <address> -s 1000 -f 500
+# Verify a WIF matches an expected address
+wifinfo <wif> | grep <expected_address>
 ```
 
 ### Batch Processing
 
 ```bash
-# Process multiple txids
+# Inspect multiple transactions
 cat txids.txt | while read txid; do
-  echo "Processing $txid..."
-  getraw "$txid" | prettytx > "tx_$txid.txt"
+  echo "=== $txid ==="
+  getraw "$txid" | prettytx
+done
+
+# Extract all output scripts from a list of txids
+cat txids.txt | while read txid; do
+  getraw "$txid" | pick --output-script 0
 done
 ```
 
-### Integration with Scripts
+### Send All Funds
 
 ```bash
-#!/bin/bash
-# Simple payment script
+# Sweep entire balance minus fees
+carve -w <WIF> -a <dest> | broadcast -m
+```
 
-WIF="$1"
-DEST="$2"
-AMOUNT="$3"
+### Split Outputs
 
-# Create and broadcast transaction
-RAWTX=$(carve -w "$WIF" -a "$DEST" -s "$AMOUNT")
-
-if [ $? -eq 0 ]; then
-  echo "Transaction created successfully"
-  echo "$RAWTX" | broadcast -m
-else
-  echo "Failed to create transaction" >&2
-  exit 1
-fi
+```bash
+# Split 1 BSV into 10 equal outputs
+carve -w <WIF> -a <addr> -s 100000000 -n 10 | broadcast -m
 ```
 
 ---
 
-## API Reference
+## Transaction Size & Fees
 
-### WhatsOnChain Endpoints Used
+| Component | Size (bytes) |
+|-----------|-------------|
+| Base overhead | ~10 |
+| Per input (P2PKH) | ~148 |
+| Per output (P2PKH) | ~34 |
 
-- **GET** `/v1/bsv/{network}/tx/{txid}/hex` - Get raw transaction
-- **GET** `/v1/bsv/{network}/address/{address}/unspent/all` - Get all UTXOs
+**Example**: 2 inputs, 2 outputs = 10 + (2 × 148) + (2 × 34) = **374 bytes**
 
-### ARC Endpoints Used
+Fee formula: `max(100, (size × feePerKB) / 1000)`
 
-- **POST** `/v1/tx` - Broadcast transaction
-- **GET** `/v1/tx/{txid}` - Get transaction status
+Default fee rate: 100 sat/KB. Minimum floor: 100 sats.
+
+BSV fees are very low (~0.05 sat/byte). A typical 1-in-2-out transaction costs ~100 sats.
 
 ---
 
-## Version Information
+## Troubleshooting
 
-- BSV SDK: `github.com/bsv-blockchain/go-sdk`
-- WhatsOnChain Client: `github.com/mrz1836/go-whatsonchain`
-- CLI Framework: `github.com/spf13/cobra`
+### "No UTXOs found for address"
+
+Address has no unspent outputs. Verify funds on [WhatsOnChain](https://whatsonchain.com) and check you're on the correct network (mainnet vs testnet).
+
+### "Insufficient funds"
+
+Not enough satoshis to cover amount + fees. Use `--debug` with carve to see available UTXOs and fee calculation.
+
+### "Transaction rejected by network"
+
+Check the transaction with `prettytx` for issues. Common causes: double spend, invalid script, insufficient fee. Verify UTXOs haven't been spent elsewhere.
+
+### "ARC error: unauthorized"
+
+Invalid or missing API key in `config.yaml`. Check the key and ensure the config file is in the correct location.
+
+### General Tips
+
+- Use `--debug` with carve for verbose UTXO selection and fee logging
+- Always preview with `prettytx` before broadcasting
+- Use `-m` (monitor) to watch transaction progression
+- Use `-t` (testnet) for experimentation
+- Pipe through `--no-color` when capturing output in scripts
+
+---
+
+## Security
+
+- **Never commit WIF keys** to version control
+- **Never share WIF keys** — they control funds directly
+- Store keys in environment variables or secure vaults:
+  ```bash
+  export WIF=$(cat ~/.secure/wallet.wif)
+  carve -w "$WIF" -a <address> -s 1000
+  ```
+- Protect `config.yaml` with ARC API keys: `chmod 600 config.yaml`
+- **Use testnet** (`-t`) for experimentation
+
+---
+
+## API Endpoints Used
+
+### WhatsOnChain (no auth required)
+
+| Endpoint | Used By |
+|----------|---------|
+| `GET /v1/bsv/{net}/address/{addr}/unspent/all` | carve |
+| `GET /v1/bsv/{net}/tx/{txid}/hex` | getraw |
+
+### ARC (API key required)
+
+| Endpoint | Used By |
+|----------|---------|
+| `POST /v1/tx` | broadcast |
+| `GET /v1/tx/{txid}` | txstatus, broadcast (monitoring) |
 
 ---
 
 ## License
 
-See project LICENSE file for details.
+See project [LICENSE](LICENSE) file.

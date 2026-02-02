@@ -1,51 +1,58 @@
 # BSV Command Line Tools
 
-A suite of command-line utilities for Bitcoin SV (BSV) transaction handling, building, broadcasting, and analysis.
+A suite of command-line utilities for the full Bitcoin SV transaction lifecycle: key generation, transaction building, broadcasting, inspection, field extraction, and status tracking.
+
+All tools are single Go binaries with no runtime dependencies. Designed for Unix-style pipeline composition.
 
 ## Tools
 
 | Tool | Description |
 |------|-------------|
-| **broadcast** | Broadcasts raw transactions to the BSV network via ARC endpoints |
-| **carve** | Creates and signs BSV transactions with smart UTXO selection |
-| **prettytx** | Parses and displays raw transactions in human-readable format |
-| **getraw** | Fetches raw transaction data from WhatsOnChain |
-| **txstatus** | Checks transaction status via ARC |
+| **keygen** | Generates BSV key pairs (mainnet/testnet, compressed/uncompressed, JSON output) |
+| **wifinfo** | Inspects a WIF private key — shows pubkeys, addresses, and WIFs for both networks |
+| **carve** | Creates and signs BSV transactions with smart UTXO selection and fee estimation |
+| **broadcast** | Broadcasts raw transactions to the BSV network via ARC with optional monitoring |
+| **txstatus** | Checks transaction status via ARC with optional polling until final state |
+| **getraw** | Fetches raw transaction hex from WhatsOnChain |
+| **prettytx** | Parses and displays raw transactions in human-readable colorized format |
+| **pick** | Extracts specific fields from raw transactions for pipeline processing |
 
 ## Installation
 
 ```bash
-# Clone the repository
 git clone https://github.com/noscere-labs/bsv-cmd-line-utils.git
 cd bsv-cmd-line-utils
 
-# Build all tools
-go build ./cmd/broadcast
-go build ./cmd/carve
-go build ./cmd/prettytx
-go build ./cmd/getraw
-go build ./cmd/txstatus
-
-# Or install globally
-go install ./cmd/broadcast
-go install ./cmd/carve
-go install ./cmd/prettytx
-go install ./cmd/getraw
-go install ./cmd/txstatus
+# Install all 8 tools
+go install ./cmd/...
 ```
 
 ## Quick Start
 
-### Create and broadcast a transaction
+### Generate a key pair
 
 ```bash
-# Create a transaction
-carve -w <WIF> -a <destination_address> -s 1000 > tx.hex
+keygen                          # Mainnet
+keygen -t -j                    # Testnet, JSON output
+```
 
-# View the transaction
+### Inspect an existing key
+
+```bash
+wifinfo <WIF>                   # Colorized output
+wifinfo -j <WIF>                # JSON output
+```
+
+### Create, preview, and broadcast a transaction
+
+```bash
+# Build a transaction
+carve -w <WIF> -a <address> -s 1000 > tx.hex
+
+# Preview it
 cat tx.hex | prettytx
 
-# Broadcast to network with monitoring
+# Broadcast with monitoring
 cat tx.hex | broadcast -m
 ```
 
@@ -55,17 +62,42 @@ cat tx.hex | broadcast -m
 getraw <txid> | prettytx
 ```
 
+### Extract specific fields
+
+```bash
+getraw <txid> | pick --txid --output-value 0
+getraw <txid> | pick --output-script 0
+```
+
+### Testnet workflow
+
+```bash
+keygen -t -j                                              # Generate testnet key
+carve -w <WIF> -a <address> -s 1000 -t | broadcast -t -m  # Build + broadcast on testnet
+```
+
+### Pipeline composition
+
+```bash
+# Create, view, and broadcast in one command
+carve -w <WIF> -a <address> -s 5000 | tee >(prettytx) | broadcast -m
+
+# Batch inspect transactions
+cat txids.txt | while read txid; do getraw "$txid" | prettytx; done
+```
+
 ## Documentation
 
 See [TOOLS.md](TOOLS.md) for comprehensive documentation including:
-- Detailed usage for each tool
+- Detailed usage and flags for each tool
 - Configuration options
-- Examples and workflows
+- Advanced examples and workflows
+- Fee estimation
 - Troubleshooting guide
 
 ## Configuration
 
-The `broadcast` and `txstatus` tools require a `config.yaml` file:
+`broadcast` and `txstatus` require a `config.yaml` file (in executable dir or cwd):
 
 ```yaml
 arc-mainnet:
@@ -84,46 +116,45 @@ polling:
   backoff_factor: 1.5
 ```
 
-## Dependencies
-
-- [go-sdk](https://github.com/bsv-blockchain/go-sdk) - BSV SDK for Go
-- [go-whatsonchain](https://github.com/mrz1836/go-whatsonchain) - WhatsOnChain API client
-- [cobra](https://github.com/spf13/cobra) - CLI framework
+Other tools (`carve`, `getraw`) query WhatsOnChain directly — no API key required.
 
 ## Project Structure
 
 ```
 bsv-cmd-line-utils/
 ├── cmd/
-│   ├── broadcast/    # Transaction broadcaster
-│   ├── carve/        # Transaction builder
-│   ├── getraw/       # Transaction fetcher
-│   ├── prettytx/     # Transaction parser
-│   └── txstatus/     # Status checker
+│   ├── broadcast/    # Transaction broadcaster (ARC)
+│   ├── carve/        # Transaction builder (UTXO selection + signing)
+│   ├── getraw/       # Transaction fetcher (WhatsOnChain)
+│   ├── keygen/       # Key pair generator
+│   ├── pick/         # Transaction field extractor
+│   ├── prettytx/     # Transaction parser/visualizer
+│   ├── txstatus/     # Status checker (ARC)
+│   └── wifinfo/      # WIF key inspector
 ├── internal/
 │   ├── arc/          # ARC client
 │   ├── cli/          # Shared CLI utilities
 │   └── config/       # Configuration loading
+├── skill/            # OpenClaw agent skill
 ├── TOOLS.md          # Detailed documentation
 └── README.md
 ```
 
-## Contributing
+## Dependencies
 
-See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for guidelines.
+- [go-sdk](https://github.com/bsv-blockchain/go-sdk) — BSV SDK for Go
+- [go-whatsonchain](https://github.com/mrz1836/go-whatsonchain) — WhatsOnChain API client
+- [cobra](https://github.com/spf13/cobra) — CLI framework
 
 ## Security
 
-- Never commit WIF private keys to version control
-- Protect API keys in config.yaml (`chmod 600 config.yaml`)
-- Use testnet for experimentation
+- **Never commit WIF private keys** to version control
+- Protect ARC API keys in `config.yaml` (`chmod 600 config.yaml`)
+- Use testnet (`-t` flag) for experimentation
+- Store WIF keys in environment variables or secure vaults
 
 For security issues, see [SECURITY.md](.github/SECURITY.md).
 
 ## License
 
 [MIT](LICENSE)
-
-## Attribution
-
-This project was bootstrapped using [mrz1836/go-template](https://github.com/mrz1836/go-template).
