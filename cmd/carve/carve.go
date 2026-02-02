@@ -1,22 +1,21 @@
 // Package main implements a Bitcoin SV transaction builder with smart UTXO selection.
 //
-// This tool creates and signs BSV transactions from a WIF private key, automatically
-// selecting the optimal set of UTXOs to minimize transaction size while covering the
-// requested amount plus fees.
+// NO SATOSHI LEFT BEHIND — every satoshi is accounted for. If there is change,
+// it always gets its own output. No dust thresholds, no silent fee absorption.
 //
 // Features:
 //   - Smart UTXO selection using largest-first algorithm
 //   - Automatic fee estimation with 100 satoshi minimum floor
-//   - Support for "send all" transactions (sats=0)
+//   - Support for "send all" transactions (sats=0) — sends to destination address
 //   - Split payments across multiple equal outputs with remainder handling
 //   - Mainnet/testnet support via WhatsOnChain API
 //   - Debug mode for verbose logging
-//   - Automatic change output handling with dust protection
+//   - Change output for every non-zero remainder (NO SATOSHI LEFT BEHIND)
 //
 // Usage:
 //
 //	carve -w <WIF> -a <address> -s 1000              # Send 1000 satoshis
-//	carve -w <WIF> -a <address>                      # Send all funds
+//	carve -w <WIF> -a <address>                      # Send all funds to address
 //	carve -w <WIF> -a <address> -s 1000 -t           # Use testnet
 //	carve -w <WIF> -a <address> --debug              # Enable debug output
 //	carve -w <WIF> -a <address> -f 200               # Custom fee rate
@@ -51,14 +50,13 @@ const (
 
 // Command-line flags
 var (
-	wif       string // WIF private key for signing
-	address   string // Destination address
-	sats      uint64 // Amount to send in satoshis (0 = send all)
-	split     int    // Number of outputs to split the amount into (1 = no split)
-	testnet   bool   // Use testnet instead of mainnet
-	feePerKb  uint64 // Fee rate in satoshis per kilobyte
-	dustLimit uint64 // Minimum output value to avoid dust
-	debug     bool   // Enable verbose debug logging
+	wif      string // WIF private key for signing
+	address  string // Destination address
+	sats     uint64 // Amount to send in satoshis (0 = send all)
+	split    int    // Number of outputs to split the amount into (1 = no split)
+	testnet  bool   // Use testnet instead of mainnet
+	feePerKb uint64 // Fee rate in satoshis per kilobyte
+	debug    bool   // Enable verbose debug logging
 )
 
 // rootCmd is the main cobra command for the carve tool.
@@ -406,8 +404,14 @@ func buildTransaction(privKey *ec.PrivateKey, sourceAddr *script.Address, destAd
 		}
 	}
 
-	// Calculate fee and add change output
-	if err := addChangeOutput(tx, sourceAddr, totalInput, amount); err != nil {
+	// Calculate fee and add change output.
+	// For send-all (amount == 0), remaining funds go to the DESTINATION address.
+	// For normal sends, change goes back to the SOURCE address.
+	changeAddr := sourceAddr
+	if amount == 0 {
+		changeAddr = destAddr
+	}
+	if err := addChangeOutput(tx, changeAddr, totalInput, amount); err != nil {
 		return nil, err
 	}
 
@@ -498,7 +502,8 @@ func addPaymentOutputs(tx *transaction.Transaction, destAddr *script.Address, de
 }
 
 // addChangeOutput calculates fees and adds a change output if needed.
-func addChangeOutput(tx *transaction.Transaction, sourceAddr *script.Address, totalInput, amount uint64) error {
+// NO SATOSHI LEFT BEHIND: if change > 0, always create a change output.
+func addChangeOutput(tx *transaction.Transaction, changeAddr *script.Address, totalInput, amount uint64) error {
 	// Calculate fees
 	estimatedSize := uint64(len(tx.Inputs)*inputSize + len(tx.Outputs)*outputSize + baseTxSize)
 	fee := (estimatedSize * feePerKb) / 1000
@@ -517,9 +522,8 @@ func addChangeOutput(tx *transaction.Transaction, sourceAddr *script.Address, to
 
 	change := totalInput - amount - fee
 
-	if change > dustLimit {
-		// Add change output back to source address
-		changeLockingScript, err := p2pkh.Lock(sourceAddr)
+	if change > 0 {
+		changeLockingScript, err := p2pkh.Lock(changeAddr)
 		if err != nil {
 			return fmt.Errorf("failed to create change locking script: %w", err)
 		}
@@ -530,10 +534,8 @@ func addChangeOutput(tx *transaction.Transaction, sourceAddr *script.Address, to
 		})
 
 		if debug {
-			log.Printf("Change to %s: %d satoshis", sourceAddr.AddressString, change)
+			log.Printf("Change to %s: %d satoshis", changeAddr.AddressString, change)
 		}
-	} else if change > 0 && debug {
-		log.Printf("Change (%d satoshis) below dust limit, adding to fee", change)
 	}
 
 	return nil
@@ -547,7 +549,6 @@ func init() {
 	rootCmd.Flags().IntVarP(&split, "split", "n", 1, "Number of equal outputs to split the amount into (default: 1 = no split)")
 	rootCmd.Flags().BoolVarP(&testnet, "testnet", "t", false, "Use testnet")
 	rootCmd.Flags().Uint64VarP(&feePerKb, "fee-per-kb", "f", 100, "Fee per kilobyte in satoshis")
-	rootCmd.Flags().Uint64VarP(&dustLimit, "dust", "d", 1, "Dust limit in satoshis")
 	rootCmd.Flags().BoolVar(&debug, "debug", false, "Enable debug logging")
 
 	rootCmd.MarkFlagRequired("wif")
