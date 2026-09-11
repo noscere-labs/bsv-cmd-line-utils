@@ -1,6 +1,6 @@
 # BSV Transaction Tools — User Guide
 
-Eight command-line tools for the full Bitcoin SV transaction lifecycle.
+Fourteen command-line tools for the full Bitcoin SV transaction lifecycle.
 
 ## Table of Contents
 
@@ -14,6 +14,7 @@ Eight command-line tools for the full Bitcoin SV transaction lifecycle.
   - [getraw — Transaction Fetcher](#getraw---transaction-fetcher)
   - [prettytx — Transaction Parser](#prettytx---transaction-parser)
   - [pick — Transaction Field Extractor](#pick---transaction-field-extractor)
+  - [addr, balance, decodescript, opreturn, signmsg, verifymsg — Additional Tools](#additional-tools)
 - [Configuration](#configuration)
 - [Examples](#examples)
 - [Transaction Size & Fees](#transaction-size--fees)
@@ -30,14 +31,20 @@ cd bsv-cmd-line-utils
 go install ./cmd/...
 
 # Or install individually
-go install ./cmd/keygen
-go install ./cmd/wifinfo
-go install ./cmd/carve
+go install ./cmd/addr
+go install ./cmd/balance
 go install ./cmd/broadcast
-go install ./cmd/txstatus
+go install ./cmd/carve
+go install ./cmd/decodescript
 go install ./cmd/getraw
-go install ./cmd/prettytx
+go install ./cmd/keygen
+go install ./cmd/opreturn
 go install ./cmd/pick
+go install ./cmd/prettytx
+go install ./cmd/signmsg
+go install ./cmd/txstatus
+go install ./cmd/verifymsg
+go install ./cmd/wifinfo
 ```
 
 ---
@@ -103,15 +110,16 @@ wifinfo --no-color <wif>        # Plain output (for scripting)
 |------|-------|-------------|---------|
 | `--wif` | `-w` | WIF string via flag | - |
 | `--json` | `-j` | Output in JSON format | false |
+| `--uncompressed` | `-u` | Include uncompressed keys, WIFs, and addresses | false |
 | `--no-color` | - | Disable colored output | false |
 
 #### Output
 
 Shows for both mainnet and testnet:
-- Compressed and uncompressed public keys
-- Compressed and uncompressed addresses
-- Compressed and uncompressed WIF encodings
+- Compressed public keys, addresses, and WIF encodings
 - Detected input network and compression
+
+Pass `--uncompressed` to additionally include uncompressed public keys, addresses, and WIF encodings.
 
 ---
 
@@ -126,7 +134,6 @@ Creates and signs BSV transactions with smart UTXO selection and automatic fee e
 - Split payments across multiple equal outputs
 - Mainnet/testnet support
 - Debug mode for verbose UTXO selection logging
-- Dust limit protection
 
 #### Usage
 
@@ -137,6 +144,7 @@ carve -w <WIF> -a <address> -s 1000 -t            # Testnet
 carve -w <WIF> -a <address> -s 1000000 -n 10      # Split into 10 equal outputs
 carve -w <WIF> -a <address> --debug               # Verbose logging
 carve -w <WIF> -a <address> -f 200                # Custom fee rate
+
 ```
 
 Outputs raw transaction hex to stdout.
@@ -150,8 +158,7 @@ Outputs raw transaction hex to stdout.
 | `--sats` | `-s` | Amount in satoshis (0 = send all) | 0 |
 | `--testnet` | `-t` | Use testnet | false |
 | `--fee-per-kb` | `-f` | Fee per kilobyte in satoshis | 100 |
-| `--dust` | `-d` | Dust limit in satoshis | 1 |
-| `--num-outputs` | `-n` | Split into N equal outputs | 1 |
+| `--split` | `-n` | Split the amount into N equal outputs | 1 |
 | `--debug` | - | Enable debug logging | false |
 
 #### How It Works
@@ -279,6 +286,7 @@ carve -w <WIF> -a <addr> -s 1000 | prettytx   # Preview before broadcast
 | Flag | Short | Description | Default |
 |------|-------|-------------|---------|
 | `--raw` | `-r` | Raw transaction hex | - |
+| `--compact` | `-c` | Enable compact output with truncated scripts | false |
 | `--no-color` | - | Disable colored output | false |
 
 #### Output Format
@@ -369,6 +377,36 @@ Accepts raw hex from argument, `-r` flag, stdin, `file://` path, or HTTP URL.
 | `--version` | `-v` | Transaction version |
 | `--locktime` | `-l` | Transaction locktime |
 | `--txid` | - | Transaction ID |
+
+---
+
+## Additional Tools
+
+The following tools are documented in short form here; run `<tool> --help` for the full flag reference.
+
+### addr — Address Validator / Deriver
+Validates BSV addresses (showing network and hash160) or derives mainnet/testnet addresses from a public key hex.
+Flags: `--json/-j`.
+
+### balance — Address Balance
+Checks the balance of a BSV address via WhatsOnChain. Accepts an address or WIF as input.
+Flags: `--testnet/-t`, `--json/-j`, `--utxos/-u` (list individual UTXOs).
+
+### decodescript — Script Decoder
+Decodes a hex-encoded Bitcoin script into opcodes, detects script type, and extracts addresses.
+Flags: `--json/-j`.
+
+### opreturn — OP_RETURN Transaction Builder
+Creates a signed BSV transaction with an OP_RETURN data output. Multiple positional arguments become multiple pushdata parts. Outputs raw tx hex to stdout.
+Flags: `--wif/-w` (required), `--testnet/-t`, `--fee-per-kb/-f`, `--dust/-d`.
+
+### signmsg — Message Signer
+Signs a message using Bitcoin Signed Message format. Outputs base64 signature to stdout.
+Flags: `--wif/-w` (required), `--message/-m`.
+
+### verifymsg — Message Verifier
+Verifies a Bitcoin Signed Message signature against an address. Exits 0 if valid, 1 if invalid.
+Flags: `--address/-a` (required), `--signature/-s` (required), `--message/-m`.
 
 ---
 
@@ -567,3 +605,8 @@ Invalid or missing API key in `config.yaml`. Check the key and ensure the config
 ## License
 
 See project [LICENSE](LICENSE) file.
+
+---
+<!-- docs-sync -->
+Documentation up to date as of commit: `fd0a61d`
+_This marker is maintained by an automated documentation sync routine. If HEAD has moved past this commit, the routine will re-check for doc drift on its next run._
